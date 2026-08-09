@@ -1,39 +1,39 @@
 /**
- * Profilul utilizatorului: identitate reală (din `/users/me`), plus istoric
- * și preferințe pe date demonstrative până la Modulul 6.
+ * The user's profile: real identity (from `/users/me`), plus history and
+ * preferences on demo data until Module 6.
  */
 
 import { Feather } from '@expo/vector-icons'
 import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native'
 
-import { CardCarte } from '@/components/book/CardCarte'
+import { BookCard } from '@/components/book/CardCarte'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Chip } from '@/components/ui/Chip'
-import { NotaDemo } from '@/components/ui/NotaDemo'
+import { DemoNote } from '@/components/ui/NotaDemo'
 import { Screen } from '@/components/ui/Screen'
-import { DATE_DEMONSTRATIVE, useIstoric, usePreferinte } from '@/features/library/hooks'
+import { DEMO_DATA, useHistory, usePreferences } from '@/features/library/hooks'
 import { useAuthStore } from '@/store/authStore'
 import { colors, radius, spacing, typography } from '@/theme'
 
-export default function ProfilScreen() {
-  const utilizator = useAuthStore((s) => s.utilizator)
-  const iesi = useAuthStore((s) => s.iesi)
+export default function ProfileScreen() {
+  const user = useAuthStore((s) => s.user)
+  const logout = useAuthStore((s) => s.logout)
 
-  const { data: istoric, isPending: incarcaIstoric } = useIstoric()
-  const { data: preferinte } = usePreferinte()
+  const { data: history, isPending: loadingHistory } = useHistory()
+  const { data: preferences } = usePreferences()
 
-  const carticitite = istoric?.length ?? 0
-  const noteDate = istoric?.filter((intrare) => intrare.nota_utilizator !== null).length ?? 0
+  const booksRead = history?.length ?? 0
+  const ratingsGiven = history?.filter((entry) => entry.user_rating !== null).length ?? 0
 
-  function confirmaIesirea() {
-    Alert.alert('Ieși din cont?', 'Va trebui să te autentifici din nou data viitoare.', [
-      { text: 'Anulează', style: 'cancel' },
+  function confirmLogout() {
+    Alert.alert('Log out?', "You'll need to log in again next time.", [
+      { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Ieși',
+        text: 'Log out',
         style: 'destructive',
         onPress: () => {
-          void iesi()
+          void logout()
         },
       },
     ])
@@ -41,74 +41,74 @@ export default function ProfilScreen() {
 
   return (
     <Screen scrollable>
-      <View style={styles.antet}>
+      <View style={styles.header}>
         <View style={styles.avatar}>
-          <Text style={styles.initialaAvatar}>
-            {(utilizator?.email.charAt(0) ?? '?').toUpperCase()}
+          <Text style={styles.avatarInitial}>
+            {(user?.email.charAt(0) ?? '?').toUpperCase()}
           </Text>
         </View>
 
-        <View style={styles.identitate}>
-          <Text style={styles.email}>{utilizator?.email ?? 'Necunoscut'}</Text>
-          <Text style={styles.membruDin}>
-            Membru din {formateazaData(utilizator?.created_at)}
+        <View style={styles.identity}>
+          <Text style={styles.email}>{user?.email ?? 'Unknown'}</Text>
+          <Text style={styles.memberSince}>
+            Member since {formatDate(user?.created_at)}
           </Text>
         </View>
       </View>
 
-      <View style={styles.statistici}>
-        <Statistica eticheta="Cărți scanate" valoare={carticitite} />
-        <Statistica eticheta="Note date" valoare={noteDate} />
-        <Statistica eticheta="Genuri urmărite" valoare={preferinte?.genuri_favorite.length ?? 0} />
+      <View style={styles.stats}>
+        <Stat label="Books scanned" value={booksRead} />
+        <Stat label="Ratings given" value={ratingsGiven} />
+        <Stat label="Genres followed" value={preferences?.favorite_genres.length ?? 0} />
       </View>
 
-      {DATE_DEMONSTRATIVE ? (
-        <NotaDemo mesaj="Istoricul și preferințele sunt demonstrative — sosesc cu Modulul 6 al backendului. Emailul de mai sus e real." />
+      {DEMO_DATA ? (
+        <DemoNote message="History and preferences are demo data — they arrive with backend Module 6. The email above is real." />
       ) : null}
 
-      <View style={styles.sectiune}>
-        <Text style={styles.titluSectiune}>Autori favoriți</Text>
-        <View style={styles.chipuri}>
-          {preferinte?.autori_favoriti.map((autor) => (
-            <Chip eticheta={autor} key={autor} ton="accent" />
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Favorite authors</Text>
+        <View style={styles.chips}>
+          {preferences?.favorite_authors.map((author) => (
+            <Chip label={author} key={author} tone="accent" />
           ))}
         </View>
       </View>
 
-      <View style={styles.sectiune}>
-        <Text style={styles.titluSectiune}>Genuri preferate</Text>
-        <View style={styles.chipuri}>
-          {preferinte?.genuri_favorite.map((gen) => (
-            <Chip eticheta={gen} key={gen} />
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Favorite genres</Text>
+        <View style={styles.chips}>
+          {preferences?.favorite_genres.map((genre) => (
+            <Chip label={genre} key={genre} />
           ))}
         </View>
       </View>
 
-      <View style={styles.sectiune}>
-        <Text style={styles.titluSectiune}>Istoric de lectură</Text>
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Reading history</Text>
 
-        {incarcaIstoric ? (
+        {loadingHistory ? (
           <ActivityIndicator color={colors.accent} />
-        ) : istoric && istoric.length > 0 ? (
-          <View style={styles.lista}>
-            {istoric.map((intrare) => (
-              <CardCarte
-                carte={intrare.carte}
-                key={intrare.id}
-                subsol={
-                  intrare.nota_utilizator !== null
-                    ? `Nota ta: ${intrare.nota_utilizator}/5`
-                    : 'Fără notă'
+        ) : history && history.length > 0 ? (
+          <View style={styles.list}>
+            {history.map((entry) => (
+              <BookCard
+                book={entry.book}
+                key={entry.id}
+                footer={
+                  entry.user_rating !== null
+                    ? `Your rating: ${entry.user_rating}/5`
+                    : 'No rating yet'
                 }
               />
             ))}
           </View>
         ) : (
           <Card>
-            <View style={styles.gol}>
+            <View style={styles.empty}>
               <Feather color={colors.inkFaint} name="book-open" size={28} />
-              <Text style={styles.textGol}>
-                Încă nicio carte scanată. Începe din fila Acasă.
+              <Text style={styles.emptyText}>
+                No books scanned yet. Start from the Home tab.
               </Text>
             </View>
           </Card>
@@ -116,46 +116,46 @@ export default function ProfilScreen() {
       </View>
 
       <Button
-        label="Ieși din cont"
-        onPress={confirmaIesirea}
-        style={styles.butonIesire}
+        label="Log out"
+        onPress={confirmLogout}
+        style={styles.logoutButton}
         variant="secondary"
       />
     </Screen>
   )
 }
 
-/** O statistică numerică din antetul profilului. */
-function Statistica({ eticheta, valoare }: { eticheta: string; valoare: number }) {
+/** A numeric statistic in the profile header. */
+function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <View style={styles.statistica}>
-      <Text style={styles.valoareStatistica}>{valoare}</Text>
-      <Text style={styles.etichetaStatistica}>{eticheta}</Text>
+    <View style={styles.stat}>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
     </View>
   )
 }
 
 /**
- * Formatează data de creare a contului în forma „august 2026".
+ * Formats the account creation date as "August 2026".
  *
  * Args:
- *   iso: Data ISO 8601 din `UserPublic.created_at`, sau `undefined`.
+ *   iso: The ISO 8601 date from `UserPublic.created_at`, or `undefined`.
  */
-function formateazaData(iso: string | undefined): string {
+function formatDate(iso: string | undefined): string {
   if (!iso) {
     return '—'
   }
 
-  const data = new Date(iso)
-  if (Number.isNaN(data.getTime())) {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) {
     return '—'
   }
 
-  return data.toLocaleDateString('ro-RO', { month: 'long', year: 'numeric' })
+  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 }
 
 const styles = StyleSheet.create({
-  antet: {
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.lg,
@@ -169,11 +169,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  initialaAvatar: {
+  avatarInitial: {
     ...typography.displayMedium,
     color: colors.inkInverse,
   },
-  identitate: {
+  identity: {
     flex: 1,
     gap: 2,
   },
@@ -181,16 +181,16 @@ const styles = StyleSheet.create({
     ...typography.displaySmall,
     color: colors.ink,
   },
-  membruDin: {
+  memberSince: {
     ...typography.caption,
     color: colors.inkMuted,
   },
-  statistici: {
+  stats: {
     flexDirection: 'row',
     gap: spacing.md,
     marginBottom: spacing.xl,
   },
-  statistica: {
+  stat: {
     flex: 1,
     alignItems: 'center',
     gap: 2,
@@ -198,42 +198,42 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceMuted,
     borderRadius: radius.md,
   },
-  valoareStatistica: {
+  statValue: {
     ...typography.displaySmall,
     color: colors.ink,
   },
-  etichetaStatistica: {
+  statLabel: {
     ...typography.caption,
     color: colors.inkMuted,
     textAlign: 'center',
   },
-  sectiune: {
+  section: {
     marginTop: spacing.xl,
     gap: spacing.md,
   },
-  titluSectiune: {
+  sectionTitle: {
     ...typography.displaySmall,
     color: colors.ink,
   },
-  chipuri: {
+  chips: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.sm,
   },
-  lista: {
+  list: {
     gap: spacing.md,
   },
-  gol: {
+  empty: {
     alignItems: 'center',
     gap: spacing.sm,
     paddingVertical: spacing.lg,
   },
-  textGol: {
+  emptyText: {
     ...typography.caption,
     color: colors.inkMuted,
     textAlign: 'center',
   },
-  butonIesire: {
+  logoutButton: {
     marginTop: spacing.xxl,
   },
 })

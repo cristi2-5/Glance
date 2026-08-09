@@ -1,7 +1,7 @@
 [project]
 name = "glance-backend"
 version = "0.1.0"
-description = "Glance — backend local pentru recunoaștere coperți de carte, RAG și recomandări"
+description = "Glance — local backend for book cover recognition, RAG and recommendations"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "fastapi>=0.115,<1.0",
@@ -38,7 +38,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
-    "slow: teste care cheamă Ollama sau alte servicii lente",
+    "slow: tests that call Ollama or other slow services",
 ]
 
 [tool.black]

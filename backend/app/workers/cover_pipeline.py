@@ -1,9 +1,10 @@
-"""Pipeline-ul complet declanșat la încărcarea unei coperți.
+"""The full pipeline triggered when a cover is uploaded.
 
-Modulul 2 conține doar scheletul asincron: starea unui job trece prin
-`pending` → `running` → `done`, cu un rezultat placeholder. Modulele 3-5
-(vision, data fetcher, RAG) vor înlocui corpul funcției `proceseaza_coperta`
-cu OCR real, fetch de metadate și sinteză, păstrând aceeași semnătură.
+Module 2 only contains the asynchronous skeleton: a job's state moves
+through `pending` → `running` → `done`, with a placeholder result. Modules
+3-5 (vision, data fetcher, RAG) will replace the body of `process_cover`
+with real OCR, metadata fetching, and synthesis, keeping the same
+signature.
 """
 
 import structlog
@@ -14,35 +15,35 @@ from app.models.job import Job, JobStatus
 logger = structlog.get_logger(__name__)
 
 
-async def proceseaza_coperta(
+async def process_cover(
     job_id: int,
-    continut_imagine: bytes,
+    image_content: bytes,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Rulează pipeline-ul de analiză a unei coperți și actualizează starea job-ului.
+    """Runs the cover analysis pipeline and updates the job's state.
 
-    Deschide propria sesiune de bază de date din `session_factory` — sesiunea
-    request-ului care a creat job-ul s-a închis deja când task-ul de fundal
-    pornește.
+    Opens its own database session from `session_factory` — the request
+    session that created the job has already closed by the time the
+    background task starts.
 
     Args:
-        job_id: Id-ul job-ului de actualizat.
-        continut_imagine: Conținutul brut al imaginii încărcate.
-        session_factory: Fabrica de sesiuni de folosit (permite testelor să
-            injecteze o bază de date izolată în loc de cea de producție).
+        job_id: The id of the job to update.
+        image_content: The raw content of the uploaded image.
+        session_factory: The session factory to use (lets tests inject an
+            isolated database instead of the production one).
     """
     async with session_factory() as db:
         job = await db.get(Job, job_id)
         if job is None:
-            logger.error("job_negasit_in_pipeline", job_id=job_id)
+            logger.error("job_not_found_in_pipeline", job_id=job_id)
             return
 
         job.status = JobStatus.RUNNING.value
         await db.commit()
 
         job.result = {
-            "mesaj": "Pipeline placeholder — Modulul 3 adaugă OCR și vision reale.",
-            "dimensiune_imagine_bytes": len(continut_imagine),
+            "message": "Placeholder pipeline — Module 3 adds real OCR and vision.",
+            "image_size_bytes": len(image_content),
         }
         job.status = JobStatus.DONE.value
         await db.commit()

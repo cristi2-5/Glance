@@ -1,4 +1,4 @@
-"""Rute de autentificare: register, login, refresh, logout."""
+"""Authentication routes: register, login, refresh, logout."""
 
 from datetime import datetime
 
@@ -6,7 +6,7 @@ from fastapi import APIRouter, status
 from sqlalchemy import select
 
 from app.api.deps import DbSession
-from app.core.exceptions import CredentialeInvalide, DateInvalide
+from app.core.exceptions import InvalidCredentials, InvalidData
 from app.core.security import (
     create_access_token,
     generate_refresh_token,
@@ -23,15 +23,15 @@ from app.schemas.user import UserPublic
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-async def _emite_tokeni(db: DbSession, user: User) -> TokenResponse:
-    """Emite o pereche nouă de token-uri (access + refresh) pentru un utilizator.
+async def _issue_tokens(db: DbSession, user: User) -> TokenResponse:
+    """Issues a new pair of tokens (access + refresh) for a user.
 
     Args:
-        db: Sesiunea de bază de date curentă.
-        user: Utilizatorul pentru care se emit token-urile.
+        db: The current database session.
+        user: The user for whom the tokens are issued.
 
     Returns:
-        Perechea de token-uri, gata de trimis clientului.
+        The token pair, ready to send to the client.
     """
     raw_refresh_token, token_hash = generate_refresh_token()
     db.add(
@@ -49,21 +49,21 @@ async def _emite_tokeni(db: DbSession, user: User) -> TokenResponse:
 
 @router.post("/register", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
 async def register(payload: RegisterRequest, db: DbSession) -> User:
-    """Înregistrează un utilizator nou.
+    """Registers a new user.
 
     Args:
-        payload: Email și parolă în clar.
-        db: Sesiunea de bază de date curentă.
+        payload: Plaintext email and password.
+        db: The current database session.
 
     Returns:
-        Utilizatorul nou creat (fără parolă).
+        The newly created user (without password).
 
     Raises:
-        DateInvalide: Dacă emailul e deja folosit de alt cont.
+        InvalidData: If the email is already in use by another account.
     """
-    email_existent = await db.scalar(select(User).where(User.email == payload.email))
-    if email_existent is not None:
-        raise DateInvalide("Emailul este deja înregistrat.")
+    existing_email = await db.scalar(select(User).where(User.email == payload.email))
+    if existing_email is not None:
+        raise InvalidData("Email is already registered.")
 
     user = User(email=payload.email, hashed_password=hash_password(payload.password))
     db.add(user)
@@ -74,18 +74,18 @@ async def register(payload: RegisterRequest, db: DbSession) -> User:
 
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, db: DbSession) -> TokenResponse:
-    """Autentifică un utilizator și emite o pereche de token-uri.
+    """Authenticates a user and issues a pair of tokens.
 
     Args:
-        payload: Email și parolă în clar.
-        db: Sesiunea de bază de date curentă.
+        payload: Plaintext email and password.
+        db: The current database session.
 
     Returns:
-        Perechea de token-uri (access + refresh).
+        The token pair (access + refresh).
 
     Raises:
-        CredentialeInvalide: Dacă emailul nu există, parola e greșită sau
-            contul e dezactivat.
+        InvalidCredentials: If the email doesn't exist, the password is
+            wrong, or the account is deactivated.
     """
     user = await db.scalar(select(User).where(User.email == payload.email))
     if (
@@ -93,28 +93,28 @@ async def login(payload: LoginRequest, db: DbSession) -> TokenResponse:
         or not user.is_active
         or not verify_password(payload.password, user.hashed_password)
     ):
-        raise CredentialeInvalide("Email sau parolă incorectă.")
+        raise InvalidCredentials("Incorrect email or password.")
 
-    return await _emite_tokeni(db, user)
+    return await _issue_tokens(db, user)
 
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(payload: RefreshRequest, db: DbSession) -> TokenResponse:
-    """Reînnoiește perechea de token-uri pe baza unui refresh token valid.
+    """Renews the token pair based on a valid refresh token.
 
-    Aplică rotation: refresh tokenul folosit e marcat revocat, iar clientul
-    primește unul nou. Un refresh token deja revocat sau expirat respinge
-    cererea.
+    Applies rotation: the used refresh token is marked revoked, and the
+    client receives a new one. An already revoked or expired refresh token
+    rejects the request.
 
     Args:
-        payload: Refresh tokenul brut, așa cum a fost emis clientului.
-        db: Sesiunea de bază de date curentă.
+        payload: The raw refresh token, as issued to the client.
+        db: The current database session.
 
     Returns:
-        O pereche nouă de token-uri (access + refresh).
+        A new pair of tokens (access + refresh).
 
     Raises:
-        CredentialeInvalide: Dacă tokenul nu există, e revocat sau a expirat.
+        InvalidCredentials: If the token doesn't exist, is revoked, or has expired.
     """
     token_hash = hash_refresh_token(payload.refresh_token)
     stored_token = await db.scalar(
@@ -122,29 +122,29 @@ async def refresh(payload: RefreshRequest, db: DbSession) -> TokenResponse:
     )
 
     if stored_token is None or stored_token.revoked or stored_token.expires_at < datetime.utcnow():
-        raise CredentialeInvalide("Refresh token invalid, revocat sau expirat.")
+        raise InvalidCredentials("Refresh token invalid, revoked, or expired.")
 
     user = await db.get(User, stored_token.user_id)
     if user is None or not user.is_active:
-        raise CredentialeInvalide("Utilizatorul nu mai este activ.")
+        raise InvalidCredentials("User is no longer active.")
 
     stored_token.revoked = True
     await db.commit()
 
-    return await _emite_tokeni(db, user)
+    return await _issue_tokens(db, user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(payload: RefreshRequest, db: DbSession) -> None:
-    """Revocă un refresh token, încheind sesiunea asociată lui.
+    """Revokes a refresh token, ending its associated session.
 
-    Idempotentă: dacă tokenul nu există deja (a fost revocat sau nu a
-    existat niciodată), operația tot reușește — nu se scurge informație
-    despre validitatea tokenului.
+    Idempotent: if the token doesn't already exist (it was revoked or
+    never existed), the operation still succeeds — no information about
+    the token's validity is leaked.
 
     Args:
-        payload: Refresh tokenul brut de revocat.
-        db: Sesiunea de bază de date curentă.
+        payload: The raw refresh token to revoke.
+        db: The current database session.
     """
     token_hash = hash_refresh_token(payload.refresh_token)
     stored_token = await db.scalar(

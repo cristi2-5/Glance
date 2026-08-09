@@ -1,8 +1,8 @@
 /**
- * Câmp de text cu etichetă și mesaj de eroare.
+ * Text field with a label and an error message.
  *
- * Eroarea vine de obicei din `ApiError.eroriCampuri`, adică direct din
- * răspunsul de validare al backendului, sau din validarea locală `zod`.
+ * The error usually comes from `ApiError.fieldErrors`, i.e. directly from
+ * the backend's validation response, or from local `zod` validation.
  */
 
 import { forwardRef, useState } from 'react'
@@ -12,9 +12,9 @@ import { colors, radius, spacing, typography } from '@/theme'
 
 interface InputProps extends Omit<TextInputProps, 'style'> {
   label: string
-  /** Mesaj de eroare afișat sub câmp; conturul devine roșu când e prezent. */
+  /** Error message shown below the field; the outline turns red when present. */
   error?: string | undefined
-  /** Text de ajutor, afișat doar când nu există eroare. */
+  /** Help text, shown only when there's no error. */
   hint?: string
 }
 
@@ -22,35 +22,35 @@ export const Input = forwardRef<TextInput, InputProps>(function Input(
   { label, error, hint, ...props },
   ref
 ) {
-  const [focalizat, setFocalizat] = useState(false)
+  const [focused, setFocused] = useState(false)
 
   return (
     <View style={styles.container}>
-      <Text style={styles.eticheta}>{label}</Text>
+      <Text style={styles.label}>{label}</Text>
 
       <TextInput
         ref={ref}
         placeholderTextColor={colors.inkFaint}
         {...props}
         onBlur={(e) => {
-          setFocalizat(false)
+          setFocused(false)
           props.onBlur?.(e)
         }}
         onFocus={(e) => {
-          setFocalizat(true)
+          setFocused(true)
           props.onFocus?.(e)
         }}
         style={[
-          styles.camp,
-          focalizat ? styles.campFocalizat : null,
-          error ? styles.campEroare : null,
+          styles.field,
+          focused ? styles.fieldFocused : null,
+          error ? styles.fieldError : null,
         ]}
       />
 
       {error ? (
-        <Text style={styles.textEroare}>{error}</Text>
+        <Text style={styles.errorText}>{error}</Text>
       ) : hint ? (
-        <Text style={styles.textAjutor}>{hint}</Text>
+        <Text style={styles.hintText}>{hint}</Text>
       ) : null}
     </View>
   )
@@ -60,11 +60,11 @@ const styles = StyleSheet.create({
   container: {
     gap: spacing.xs,
   },
-  eticheta: {
+  label: {
     ...typography.label,
     color: colors.inkMuted,
   },
-  camp: {
+  field: {
     ...typography.body,
     minHeight: 52,
     paddingHorizontal: spacing.lg,
@@ -75,18 +75,18 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: radius.md,
   },
-  campFocalizat: {
+  fieldFocused: {
     borderColor: colors.accent,
   },
-  campEroare: {
+  fieldError: {
     borderColor: colors.danger,
     backgroundColor: colors.dangerSoft,
   },
-  textEroare: {
+  errorText: {
     ...typography.caption,
     color: colors.danger,
   },
-  textAjutor: {
+  hintText: {
     ...typography.caption,
     color: colors.inkFaint,
   },

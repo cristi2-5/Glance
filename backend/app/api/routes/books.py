@@ -1,83 +1,83 @@
-"""Rută pentru analiza coperții unei cărți: upload → job asincron."""
+"""Route for analyzing a book cover: upload → async job."""
 
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, File, UploadFile, status
 
-from app.api.deps import DbSession, SessionFactory, UtilizatorCurent
+from app.api.deps import CurrentUser, DbSession, SessionFactory
 from app.core.config import get_settings
-from app.core.exceptions import FisierPreaMare, TipFisierNesuportat
+from app.core.exceptions import FileTooLarge, UnsupportedFileType
 from app.models.job import Job, JobStatus
 from app.schemas.job import JobCreated
-from app.workers.cover_pipeline import proceseaza_coperta
+from app.workers.cover_pipeline import process_cover
 
 router = APIRouter(prefix="/books", tags=["books"])
 
-TIPURI_IMAGINE_ACCEPTATE = {"image/jpeg", "image/png", "image/heic", "image/heif"}
+ACCEPTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/heic", "image/heif"}
 
 
-async def _citeste_si_valideaza(file: UploadFile) -> bytes:
-    """Validează tipul MIME și dimensiunea unei imagini încărcate.
+async def _read_and_validate(file: UploadFile) -> bytes:
+    """Validates the MIME type and size of an uploaded image.
 
     Args:
-        file: Fișierul primit în cererea multipart.
+        file: The file received in the multipart request.
 
     Returns:
-        Conținutul brut al fișierului, dacă trece validarea.
+        The raw content of the file, if it passes validation.
 
     Raises:
-        TipFisierNesuportat: Dacă tipul MIME nu e JPEG, PNG sau HEIC/HEIF.
-        FisierPreaMare: Dacă fișierul depășește `max_upload_size_bytes`.
+        UnsupportedFileType: If the MIME type is not JPEG, PNG, or HEIC/HEIF.
+        FileTooLarge: If the file exceeds `max_upload_size_bytes`.
     """
-    if file.content_type not in TIPURI_IMAGINE_ACCEPTATE:
-        raise TipFisierNesuportat(
-            f"Tip de fișier nesuportat: {file.content_type!r}. "
-            "Acceptate: image/jpeg, image/png, image/heic, image/heif."
+    if file.content_type not in ACCEPTED_IMAGE_TYPES:
+        raise UnsupportedFileType(
+            f"Unsupported file type: {file.content_type!r}. "
+            "Accepted: image/jpeg, image/png, image/heic, image/heif."
         )
 
     max_bytes = get_settings().max_upload_size_bytes
-    continut = await file.read()
-    if len(continut) > max_bytes:
-        raise FisierPreaMare(
-            f"Fișierul depășește dimensiunea maximă permisă de {max_bytes // (1024 * 1024)} MB."
+    content = await file.read()
+    if len(content) > max_bytes:
+        raise FileTooLarge(
+            f"File exceeds the maximum allowed size of {max_bytes // (1024 * 1024)} MB."
         )
-    return continut
+    return content
 
 
 @router.post("/analyze-cover", status_code=status.HTTP_202_ACCEPTED, response_model=JobCreated)
-async def analizeaza_coperta(
+async def analyze_cover(
     background_tasks: BackgroundTasks,
     db: DbSession,
     session_factory: SessionFactory,
-    utilizator_curent: UtilizatorCurent,
+    current_user: CurrentUser,
     file: Annotated[UploadFile, File()],
 ) -> JobCreated:
-    """Primește o fotografie a coperții unei cărți și pornește analiza asincronă.
+    """Receives a photo of a book cover and starts the asynchronous analysis.
 
-    Creează un job în stare `pending`, apoi îl pasează unui task de fundal
-    care parcurge starea `running` → `done`. Clientul primește imediat id-ul
-    job-ului și face polling pe `GET /jobs/{job_id}`.
+    Creates a job in `pending` state, then hands it off to a background
+    task that moves through `running` → `done`. The client immediately
+    receives the job id and polls `GET /jobs/{job_id}`.
 
     Args:
-        background_tasks: Coada de task-uri de fundal FastAPI.
-        db: Sesiunea de bază de date curentă.
-        session_factory: Fabrica de sesiuni pasată task-ului de fundal.
-        utilizator_curent: Utilizatorul autentificat, proprietarul job-ului.
-        file: Imaginea coperții (JPEG, PNG sau HEIC/HEIF, max 8 MB).
+        background_tasks: The FastAPI background task queue.
+        db: The current database session.
+        session_factory: The session factory passed to the background task.
+        current_user: The authenticated user, owner of the job.
+        file: The cover image (JPEG, PNG, or HEIC/HEIF, max 8 MB).
 
     Returns:
-        Id-ul job-ului nou creat.
+        The id of the newly created job.
 
     Raises:
-        TipFisierNesuportat: Dacă tipul fișierului nu e acceptat.
-        FisierPreaMare: Dacă fișierul depășește dimensiunea maximă.
+        UnsupportedFileType: If the file type is not accepted.
+        FileTooLarge: If the file exceeds the maximum size.
     """
-    continut = await _citeste_si_valideaza(file)
+    content = await _read_and_validate(file)
 
-    job = Job(user_id=utilizator_curent.id, status=JobStatus.PENDING.value)
+    job = Job(user_id=current_user.id, status=JobStatus.PENDING.value)
     db.add(job)
     await db.commit()
     await db.refresh(job)
 
-    background_tasks.add_task(proceseaza_coperta, job.id, continut, session_factory)
+    background_tasks.add_task(process_cover, job.id, content, session_factory)
     return JobCreated(job_id=job.id)

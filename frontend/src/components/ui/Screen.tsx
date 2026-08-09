@@ -1,8 +1,8 @@
 /**
- * Containerul de bază al fiecărui ecran.
+ * The base container for every screen.
  *
- * Se ocupă de zonele sigure (notch, bara de gesturi) și de fundalul cald,
- * ca ecranele să nu repete aceeași plumbărie.
+ * Handles safe areas (notch, gesture bar) and the warm background, so
+ * screens don't repeat the same plumbing.
  */
 
 import type { ReactNode } from 'react'
@@ -13,9 +13,9 @@ import { colors, spacing } from '@/theme'
 
 interface ScreenProps {
   children: ReactNode
-  /** Face conținutul derulabil. Pentru ecrane cu text lung sau formulare. */
+  /** Makes the content scrollable. For screens with long text or forms. */
   scrollable?: boolean
-  /** Elimină padding-ul orizontal — util pentru liste care ating marginile. */
+  /** Removes horizontal padding — useful for lists that touch the edges. */
   edgeToEdge?: boolean
   contentStyle?: ViewStyle
 }
@@ -37,7 +37,7 @@ export function Screen({
   if (scrollable) {
     return (
       <ScrollView
-        style={styles.radacina}
+        style={styles.root}
         contentContainerStyle={[padding, contentStyle]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
@@ -47,11 +47,11 @@ export function Screen({
     )
   }
 
-  return <View style={[styles.radacina, padding, contentStyle]}>{children}</View>
+  return <View style={[styles.root, padding, contentStyle]}>{children}</View>
 }
 
 const styles = StyleSheet.create({
-  radacina: {
+  root: {
     flex: 1,
     backgroundColor: colors.background,
   },

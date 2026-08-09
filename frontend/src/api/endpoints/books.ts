@@ -1,51 +1,51 @@
-/** Trimiterea coperții spre analiză. */
+/** Sending the cover for analysis. */
 
 import { apiClient } from '@/api/client'
-import { TIMEOUT_UPLOAD_MS } from '@/config/env'
-import type { JobCreat } from '@/types/api'
+import { UPLOAD_TIMEOUT_MS } from '@/config/env'
+import type { JobCreated } from '@/types/api'
 
 /**
- * Descrierea unui fișier local, în forma pe care o acceptă `FormData` în
- * React Native. Nu e un `Blob` real, dar `fetch`/`XMLHttpRequest` din RN
- * știu să-l trateze; de aici casturile de mai jos.
+ * Description of a local file, in the shape `FormData` accepts in
+ * React Native. It's not a real `Blob`, but `fetch`/`XMLHttpRequest` in RN
+ * know how to handle it; hence the casts below.
  */
-interface FisierLocalRN {
+interface LocalRNFile {
   uri: string
   name: string
   type: string
 }
 
 /**
- * Trimite fotografia coperții și pornește analiza asincronă.
+ * Sends the cover photo and starts the asynchronous analysis.
  *
- * Imaginea trebuie să fie deja redimensionată — vezi
- * `pregatesteCopertaPentruUpload` din `src/lib/imagine.ts`.
+ * The image must already be resized — see `prepareCoverForUpload` in
+ * `src/lib/image.ts`.
  *
  * Args:
- *   uri: URI-ul local al imaginii JPEG pregătite.
+ *   uri: The local URI of the prepared JPEG image.
  *
  * Returns:
- *   Id-ul job-ului creat, de urmărit prin `GET /jobs/{id}`.
+ *   The id of the created job, to track via `GET /jobs/{id}`.
  *
  * Raises:
- *   ApiError: 413 dacă imaginea depășește 8 MB, 415 dacă tipul nu e acceptat,
- *     401 dacă sesiunea a expirat.
+ *   ApiError: 413 if the image exceeds 8 MB, 415 if the type isn't accepted,
+ *     401 if the session has expired.
  */
-export async function analizeazaCoperta(uri: string): Promise<JobCreat> {
-  const fisier: FisierLocalRN = {
+export async function analyzeCover(uri: string): Promise<JobCreated> {
+  const file: LocalRNFile = {
     uri,
-    name: 'coperta.jpg',
+    name: 'cover.jpg',
     type: 'image/jpeg',
   }
 
-  const formular = new FormData()
-  // Numele câmpului trebuie să fie exact `file` — așa e declarat parametrul
-  // `UploadFile` în `backend/app/api/routes/books.py`.
-  formular.append('file', fisier as unknown as Blob)
+  const form = new FormData()
+  // The field name must be exactly `file` — that's how the `UploadFile`
+  // parameter is declared in `backend/app/api/routes/books.py`.
+  form.append('file', file as unknown as Blob)
 
-  const { data } = await apiClient.post<JobCreat>('/books/analyze-cover', formular, {
+  const { data } = await apiClient.post<JobCreated>('/books/analyze-cover', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: TIMEOUT_UPLOAD_MS,
+    timeout: UPLOAD_TIMEOUT_MS,
   })
 
   return data

@@ -1,4 +1,4 @@
-"""Modelele SQLAlchemy ale aplicației Glance."""
+"""SQLAlchemy models for the Glance application."""
 
 from app.models.job import Job, JobStatus
 from app.models.refresh_token import RefreshToken

@@ -1,10 +1,10 @@
 /**
- * Layout-ul rădăcină: providers, fonturi și restaurarea sesiunii.
+ * The root layout: providers, fonts, and session restoration.
  *
- * Splash screen-ul rămâne vizibil până când *ambele* condiții sunt
- * îndeplinite: fonturile s-au încărcat și știm dacă utilizatorul are sesiune.
- * Altfel apar două defecte vizibile — un flash cu fontul de sistem și o
- * clipă de ecran de login pentru un utilizator deja autentificat.
+ * The splash screen stays visible until *both* conditions are met: the
+ * fonts have loaded and we know whether the user has a session. Otherwise
+ * two visible glitches appear — a flash of the system font and a brief
+ * login screen for an already-authenticated user.
  */
 
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -16,7 +16,7 @@ import { StyleSheet } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
-import { seteazaHandlerSesiuneExpirata } from '@/api/client'
+import { setSessionExpiredHandler } from '@/api/client'
 import { queryClient } from '@/lib/queryClient'
 import { useAuthStore } from '@/store/authStore'
 import { colors, useAppFonts } from '@/theme'
@@ -24,35 +24,35 @@ import { colors, useAppFonts } from '@/theme'
 void SplashScreen.preventAutoHideAsync()
 
 export default function RootLayout() {
-  const [fonturiIncarcate] = useAppFonts()
-  const stare = useAuthStore((s) => s.stare)
-  const restaureazaSesiunea = useAuthStore((s) => s.restaureazaSesiunea)
-  const invalideazaLocal = useAuthStore((s) => s.invalideazaLocal)
+  const [fontsLoaded] = useAppFonts()
+  const status = useAuthStore((s) => s.status)
+  const restoreSession = useAuthStore((s) => s.restoreSession)
+  const invalidateLocal = useAuthStore((s) => s.invalidateLocal)
 
-  // Interceptorul HTTP nu poate importa store-ul direct (ar crea o
-  // dependență circulară), deci îi predăm handlerul o singură dată.
+  // The HTTP interceptor can't import the store directly (it would create
+  // a circular dependency), so we hand it the handler once.
   useEffect(() => {
-    seteazaHandlerSesiuneExpirata(invalideazaLocal)
-  }, [invalideazaLocal])
-
-  useEffect(() => {
-    void restaureazaSesiunea()
-  }, [restaureazaSesiunea])
-
-  const gataDeAfisare = fonturiIncarcate && stare !== 'necunoscuta'
+    setSessionExpiredHandler(invalidateLocal)
+  }, [invalidateLocal])
 
   useEffect(() => {
-    if (gataDeAfisare) {
+    void restoreSession()
+  }, [restoreSession])
+
+  const readyToDisplay = fontsLoaded && status !== 'unknown'
+
+  useEffect(() => {
+    if (readyToDisplay) {
       void SplashScreen.hideAsync()
     }
-  }, [gataDeAfisare])
+  }, [readyToDisplay])
 
-  if (!gataDeAfisare) {
+  if (!readyToDisplay) {
     return null
   }
 
   return (
-    <GestureHandlerRootView style={styles.radacina}>
+    <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
           <StatusBar style="dark" />
@@ -69,5 +69,5 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  radacina: { flex: 1 },
+  root: { flex: 1 },
 })

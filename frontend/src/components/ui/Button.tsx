@@ -1,9 +1,9 @@
 /**
- * Butonul standard al aplicației.
+ * The app's standard button.
  *
- * Trei variante: `primary` (teracotă plin), `secondary` (contur) și
- * `ghost` (doar text). Include feedback haptic la apăsare și o stare de
- * încărcare care blochează apăsările repetate.
+ * Three variants: `primary` (solid terracotta), `secondary` (outline), and
+ * `ghost` (text only). Includes haptic feedback on press and a loading
+ * state that blocks repeated presses.
  */
 
 import * as Haptics from 'expo-haptics'
@@ -17,7 +17,7 @@ interface ButtonProps {
   label: string
   onPress: () => void
   variant?: ButtonVariant
-  /** Afișează un indicator și blochează apăsarea. */
+  /** Shows a spinner and blocks the press. */
   loading?: boolean
   disabled?: boolean
   style?: ViewStyle
@@ -31,7 +31,7 @@ export function Button({
   disabled = false,
   style,
 }: ButtonProps) {
-  const inactiv = disabled || loading
+  const inactive = disabled || loading
 
   function handlePress() {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
@@ -41,14 +41,14 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled: inactiv, busy: loading }}
-      disabled={inactiv}
+      accessibilityState={{ disabled: inactive, busy: loading }}
+      disabled={inactive}
       onPress={handlePress}
       style={({ pressed }) => [
-        styles.baza,
+        styles.base,
         styles[variant],
-        pressed && !inactiv ? stylesApasat[variant] : null,
-        inactiv ? styles.inactiv : null,
+        pressed && !inactive ? pressedStyles[variant] : null,
+        inactive ? styles.inactive : null,
         style,
       ]}
     >
@@ -58,14 +58,14 @@ export function Button({
           size="small"
         />
       ) : (
-        <Text style={[styles.eticheta, stylesEticheta[variant]]}>{label}</Text>
+        <Text style={[styles.label, labelStyles[variant]]}>{label}</Text>
       )}
     </Pressable>
   )
 }
 
 const styles = StyleSheet.create({
-  baza: {
+  base: {
     minHeight: 52,
     alignItems: 'center',
     justifyContent: 'center',
@@ -86,21 +86,21 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
     minHeight: 44,
   },
-  inactiv: {
+  inactive: {
     opacity: 0.5,
   },
-  eticheta: {
+  label: {
     ...typography.button,
   },
 })
 
-const stylesApasat = StyleSheet.create({
+const pressedStyles = StyleSheet.create({
   primary: { backgroundColor: colors.accentPressed, borderColor: colors.accentPressed },
   secondary: { backgroundColor: colors.surfaceMuted },
   ghost: { opacity: 0.6 },
 })
 
-const stylesEticheta = StyleSheet.create({
+const labelStyles = StyleSheet.create({
   primary: { color: colors.inkInverse },
   secondary: { color: colors.ink },
   ghost: { color: colors.accent },

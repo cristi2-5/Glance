@@ -1,94 +1,94 @@
 /**
- * Stocarea tokenurilor în zona securizată a sistemului de operare.
+ * Token storage in the operating system's secure area.
  *
- * `expo-secure-store` folosește Keychain pe iOS și Keystore pe Android —
- * spre deosebire de `AsyncStorage`, conținutul nu e lizibil dintr-un backup
- * al aplicației sau de pe un telefon rootat.
+ * `expo-secure-store` uses the Keychain on iOS and Keystore on Android —
+ * unlike `AsyncStorage`, the content isn't readable from an app backup or
+ * from a rooted phone.
  *
- * Peste stocarea nativă ținem o oglindă în memorie: interceptorul de cereri
- * citește tokenul la *fiecare* request, iar un acces la Keychain per cerere
- * ar fi vizibil ca latență.
+ * On top of the native storage we keep an in-memory mirror: the request
+ * interceptor reads the token on *every* request, and a Keychain access per
+ * request would be visible as latency.
  */
 
 import * as SecureStore from 'expo-secure-store'
 
-import type { RaspunsTokenuri } from '@/types/api'
+import type { TokenResponse } from '@/types/api'
 
-const CHEIE_ACCESS = 'glance.access_token'
-const CHEIE_REFRESH = 'glance.refresh_token'
+const ACCESS_KEY = 'glance.access_token'
+const REFRESH_KEY = 'glance.refresh_token'
 
-let accessInMemorie: string | null = null
-let refreshInMemorie: string | null = null
-let hidratat = false
+let accessInMemory: string | null = null
+let refreshInMemory: string | null = null
+let hydrated = false
 
 /**
- * Citește tokenurile din stocarea securizată în oglinda din memorie.
+ * Reads the tokens from secure storage into the in-memory mirror.
  *
- * Idempotentă: apelurile ulterioare nu mai ating Keychain-ul.
+ * Idempotent: subsequent calls no longer touch the Keychain.
  */
-async function hidrateaza(): Promise<void> {
-  if (hidratat) {
+async function hydrate(): Promise<void> {
+  if (hydrated) {
     return
   }
 
   const [access, refresh] = await Promise.all([
-    SecureStore.getItemAsync(CHEIE_ACCESS),
-    SecureStore.getItemAsync(CHEIE_REFRESH),
+    SecureStore.getItemAsync(ACCESS_KEY),
+    SecureStore.getItemAsync(REFRESH_KEY),
   ])
 
-  accessInMemorie = access
-  refreshInMemorie = refresh
-  hidratat = true
+  accessInMemory = access
+  refreshInMemory = refresh
+  hydrated = true
 }
 
 export const tokenStore = {
-  /** Forțează citirea din stocare — apelată o dată, la pornirea aplicației. */
-  hidrateaza,
+  /** Forces a read from storage — called once, at app startup. */
+  hydrate,
 
   /**
    * Returns:
-   *   Tokenul de acces curent, sau `null` dacă nu există sesiune.
+   *   The current access token, or `null` if there is no session.
    */
   async getAccessToken(): Promise<string | null> {
-    await hidrateaza()
-    return accessInMemorie
+    await hydrate()
+    return accessInMemory
   },
 
   /**
    * Returns:
-   *   Refresh tokenul curent, sau `null` dacă nu există sesiune.
+   *   The current refresh token, or `null` if there is no session.
    */
   async getRefreshToken(): Promise<string | null> {
-    await hidrateaza()
-    return refreshInMemorie
+    await hydrate()
+    return refreshInMemory
   },
 
   /**
-   * Persistă o pereche nouă de tokenuri.
+   * Persists a new pair of tokens.
    *
    * Args:
-   *   tokenuri: Răspunsul de la `/auth/login`, `/auth/register` sau `/auth/refresh`.
+   *   tokens: The response from `/auth/login`, `/auth/register`, or `/auth/refresh`.
    */
-  async salveaza(tokenuri: RaspunsTokenuri): Promise<void> {
-    accessInMemorie = tokenuri.access_token
-    refreshInMemorie = tokenuri.refresh_token
-    hidratat = true
+  async save(tokens: TokenResponse): Promise<void> {
+    accessInMemory = tokens.access_token
+    refreshInMemory = tokens.refresh_token
+    hydrated = true
 
     await Promise.all([
-      SecureStore.setItemAsync(CHEIE_ACCESS, tokenuri.access_token),
-      SecureStore.setItemAsync(CHEIE_REFRESH, tokenuri.refresh_token),
+      SecureStore.setItemAsync(ACCESS_KEY, tokens.access_token),
+      SecureStore.setItemAsync(REFRESH_KEY, tokens.refresh_token),
     ])
   },
 
-  /** Șterge sesiunea din memorie și din stocarea securizată. */
-  async sterge(): Promise<void> {
-    accessInMemorie = null
-    refreshInMemorie = null
-    hidratat = true
+  /** Clears the session from memory and from secure storage. */
+  async clear(): Promise<void> {
+    accessInMemory = null
+    refreshInMemory = null
+    hydrated = true
 
     await Promise.all([
-      SecureStore.deleteItemAsync(CHEIE_ACCESS),
-      SecureStore.deleteItemAsync(CHEIE_REFRESH),
+      SecureStore.deleteItemAsync(ACCESS_KEY),
+      SecureStore.deleteItemAsync(REFRESH_KEY),
     ])
   },
 }

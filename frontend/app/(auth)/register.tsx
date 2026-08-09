@@ -1,8 +1,8 @@
 /**
- * Ecranul de înregistrare.
+ * The registration screen.
  *
- * Backendul nu întoarce tokenuri la `/auth/register`, deci `creeazaCont`
- * înlănțuiește register + login. Pentru utilizator rămâne un singur pas.
+ * The backend doesn't return tokens from `/auth/register`, so `createAccount`
+ * chains register + login. For the user it stays a single step.
  */
 
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -12,66 +12,66 @@ import { Controller, useForm } from 'react-hook-form'
 import { KeyboardAvoidingView, Platform, StyleSheet, Text, View } from 'react-native'
 
 import { ApiError } from '@/api/errors'
-import { BannerEroare } from '@/components/ui/BannerEroare'
+import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Screen } from '@/components/ui/Screen'
-import { schemaInregistrare, type DateInregistrare } from '@/features/auth/schema'
+import { registerSchema, type RegisterData } from '@/features/auth/schema'
 import { useAuthStore } from '@/store/authStore'
 import { colors, spacing, typography } from '@/theme'
 
 export default function RegisterScreen() {
-  const creeazaCont = useAuthStore((s) => s.creeazaCont)
-  const [eroareGenerala, setEroareGenerala] = useState<string | null>(null)
+  const createAccount = useAuthStore((s) => s.createAccount)
+  const [generalError, setGeneralError] = useState<string | null>(null)
 
   const {
     control,
     handleSubmit,
     setError,
     formState: { errors, isSubmitting },
-  } = useForm<DateInregistrare>({
-    resolver: zodResolver(schemaInregistrare),
-    defaultValues: { email: '', password: '', confirmare: '' },
+  } = useForm<RegisterData>({
+    resolver: zodResolver(registerSchema),
+    defaultValues: { email: '', password: '', confirmPassword: '' },
   })
 
-  async function trimite(date: DateInregistrare) {
-    setEroareGenerala(null)
+  async function submit(data: RegisterData) {
+    setGeneralError(null)
 
     try {
-      await creeazaCont({ email: date.email, password: date.password })
-    } catch (eroare) {
-      if (eroare instanceof ApiError) {
-        const campuri = Object.entries(eroare.eroriCampuri)
+      await createAccount({ email: data.email, password: data.password })
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const fields = Object.entries(error.fieldErrors)
 
-        for (const [camp, mesaj] of campuri) {
-          if (camp === 'email' || camp === 'password') {
-            setError(camp, { message: mesaj })
+        for (const [field, message] of fields) {
+          if (field === 'email' || field === 'password') {
+            setError(field, { message })
           }
         }
 
-        if (campuri.length === 0) {
-          setEroareGenerala(eroare.message)
+        if (fields.length === 0) {
+          setGeneralError(error.message)
         }
         return
       }
 
-      setEroareGenerala('A apărut o eroare neașteptată.')
+      setGeneralError('An unexpected error occurred.')
     }
   }
 
   return (
-    <Screen scrollable contentStyle={styles.continut}>
+    <Screen scrollable contentStyle={styles.content}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={styles.antet}>
+        <View style={styles.header}>
           <Text style={styles.eyebrow}>Glance</Text>
-          <Text style={styles.titlu}>Creează-ți biblioteca</Text>
-          <Text style={styles.subtitlu}>
-            Contul păstrează cărțile scanate și îmbunătățește recomandările în timp.
+          <Text style={styles.title}>Create your library</Text>
+          <Text style={styles.subtitle}>
+            Your account keeps the books you've scanned and improves recommendations over time.
           </Text>
         </View>
 
-        <View style={styles.formular}>
-          {eroareGenerala ? <BannerEroare mesaj={eroareGenerala} /> : null}
+        <View style={styles.form}>
+          {generalError ? <ErrorBanner message={generalError} /> : null}
 
           <Controller
             control={control}
@@ -85,7 +85,7 @@ export default function RegisterScreen() {
                 label="Email"
                 onBlur={onBlur}
                 onChangeText={onChange}
-                placeholder="nume@exemplu.ro"
+                placeholder="name@example.com"
                 value={value}
               />
             )}
@@ -99,8 +99,8 @@ export default function RegisterScreen() {
                 autoCapitalize="none"
                 autoComplete="new-password"
                 error={errors.password?.message}
-                hint="Minim 8 caractere."
-                label="Parolă"
+                hint="Minimum 8 characters."
+                label="Password"
                 onBlur={onBlur}
                 onChangeText={onChange}
                 placeholder="••••••••"
@@ -112,13 +112,13 @@ export default function RegisterScreen() {
 
           <Controller
             control={control}
-            name="confirmare"
+            name="confirmPassword"
             render={({ field: { onChange, onBlur, value } }) => (
               <Input
                 autoCapitalize="none"
                 autoComplete="new-password"
-                error={errors.confirmare?.message}
-                label="Confirmă parola"
+                error={errors.confirmPassword?.message}
+                label="Confirm password"
                 onBlur={onBlur}
                 onChangeText={onChange}
                 placeholder="••••••••"
@@ -129,19 +129,19 @@ export default function RegisterScreen() {
           />
 
           <Button
-            label="Creează cont"
+            label="Create account"
             loading={isSubmitting}
             onPress={() => {
-              void handleSubmit(trimite)()
+              void handleSubmit(submit)()
             }}
-            style={styles.buton}
+            style={styles.button}
           />
         </View>
 
-        <View style={styles.subsol}>
-          <Text style={styles.textSubsol}>Ai deja cont?</Text>
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>Already have an account?</Text>
           <Link href="/login" style={styles.link}>
-            Autentifică-te
+            Log in
           </Link>
         </View>
       </KeyboardAvoidingView>
@@ -150,11 +150,11 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  continut: {
+  content: {
     flexGrow: 1,
     justifyContent: 'center',
   },
-  antet: {
+  header: {
     marginBottom: spacing.xxl,
     gap: spacing.sm,
   },
@@ -162,28 +162,28 @@ const styles = StyleSheet.create({
     ...typography.overline,
     color: colors.accent,
   },
-  titlu: {
+  title: {
     ...typography.displayLarge,
     color: colors.ink,
   },
-  subtitlu: {
+  subtitle: {
     ...typography.body,
     color: colors.inkMuted,
   },
-  formular: {
+  form: {
     gap: spacing.lg,
   },
-  buton: {
+  button: {
     marginTop: spacing.sm,
   },
-  subsol: {
+  footer: {
     marginTop: spacing.xxl,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     gap: spacing.xs,
   },
-  textSubsol: {
+  footerText: {
     ...typography.caption,
     color: colors.inkMuted,
   },

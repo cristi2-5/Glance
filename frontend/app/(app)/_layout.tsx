@@ -1,10 +1,9 @@
 /**
- * Grupul de ecrane protejate.
+ * The group of protected screens.
  *
- * Poarta de acces a aplicației: fără sesiune validă, orice rută de aici
- * redirecționează spre login. Conține un `Stack`, nu direct `Tabs`, pentru că
- * ecranele de scanare (camera, rezultatul) trebuie să acopere tot ecranul,
- * fără bara de tab-uri.
+ * The app's access gate: without a valid session, any route here redirects
+ * to login. Contains a `Stack`, not `Tabs` directly, because the scanning
+ * screens (camera, result) need to cover the whole screen, without the tab bar.
  */
 
 import { Redirect, Stack } from 'expo-router'
@@ -13,9 +12,9 @@ import { useAuthStore } from '@/store/authStore'
 import { colors } from '@/theme'
 
 export default function AppLayout() {
-  const stare = useAuthStore((s) => s.stare)
+  const status = useAuthStore((s) => s.status)
 
-  if (stare !== 'autentificat') {
+  if (status !== 'authenticated') {
     return <Redirect href="/login" />
   }
 

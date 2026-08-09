@@ -1,18 +1,18 @@
-"""Creare tabele la pornirea aplicației.
+"""Table creation at application startup.
 
-Cât timp schema e simplă, `Base.metadata.create_all` e suficient. Când
-schema începe să evolueze cu migrații reale, se trece la Alembic (vezi
-CLAUDE.md).
+As long as the schema is simple, `Base.metadata.create_all` is sufficient.
+When the schema starts to evolve with real migrations, switch to Alembic
+(see CLAUDE.md).
 """
 
 from app.db.session import Base, engine
 
-# Import obligatoriu: înregistrează modelele pe `Base.metadata` înainte de
-# `create_all`. Fără el, tabelele lor nu ar fi create.
+# Required import: registers the models on `Base.metadata` before
+# `create_all`. Without it, their tables would not be created.
 from app.models import Job, RefreshToken, User  # noqa: F401
 
 
 async def init_db() -> None:
-    """Creează toate tabelele definite pe `Base.metadata`, dacă nu există deja."""
+    """Creates all tables defined on `Base.metadata`, if they don't already exist."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

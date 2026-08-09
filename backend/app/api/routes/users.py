@@ -1,8 +1,8 @@
-"""Rute despre utilizatorul curent."""
+"""Routes about the current user."""
 
 from fastapi import APIRouter
 
-from app.api.deps import UtilizatorCurent
+from app.api.deps import CurrentUser
 from app.models.user import User
 from app.schemas.user import UserPublic
 
@@ -10,13 +10,13 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 
 @router.get("/me", response_model=UserPublic)
-async def citeste_profil_propriu(utilizator_curent: UtilizatorCurent) -> User:
-    """Returnează profilul utilizatorului autentificat.
+async def read_own_profile(current_user: CurrentUser) -> User:
+    """Returns the profile of the authenticated user.
 
     Args:
-        utilizator_curent: Utilizatorul rezolvat din tokenul de acces.
+        current_user: The user resolved from the access token.
 
     Returns:
-        Profilul public al utilizatorului curent.
+        The public profile of the current user.
     """
-    return utilizator_curent
+    return current_user

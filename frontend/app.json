@@ -33,7 +33,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Glance folosește camera pentru a fotografia coperta unei cărți."
+          "cameraPermission": "Glance uses the camera to photograph a book cover."
         }
       ],
       [

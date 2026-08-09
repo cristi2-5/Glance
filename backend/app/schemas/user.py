@@ -1,4 +1,4 @@
-"""Scheme Pydantic pentru reprezentarea publică a unui utilizator."""
+"""Pydantic schemas for the public representation of a user."""
 
 from datetime import datetime
 
@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr
 
 
 class UserPublic(BaseModel):
-    """Reprezentarea unui utilizator expusă către client (fără parolă)."""
+    """The representation of a user exposed to the client (no password)."""
 
     model_config = ConfigDict(from_attributes=True)
 

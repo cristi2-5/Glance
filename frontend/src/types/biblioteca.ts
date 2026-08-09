@@ -1,52 +1,52 @@
 /**
- * Tipuri pentru istoricul de lectură, preferințe și recomandări.
+ * Types for reading history, preferences and recommendations.
  *
- * Backendul nu expune încă aceste resurse — apar la **Modulul 6**
- * (`ReadingHistory`, `Preference`, recomandări content-based). Le definim
- * de pe acum ca ecranele să fie scrise contra unui contract stabil; mock-urile
- * din `src/mocks/` respectă exact aceste forme.
+ * The backend doesn't expose these resources yet — they arrive in
+ * **Module 6** (`ReadingHistory`, `Preference`, content-based recommendations).
+ * We define them now so the screens can be written against a stable
+ * contract; the mocks in `src/mocks/` respect these shapes exactly.
  *
- * Când Modulul 6 e gata, se compară cu schema reală și se ajustează *aici*,
- * o singură dată — ecranele urmează prin typecheck.
+ * Once Module 6 is ready, compare against the real schema and adjust
+ * *here*, once — the screens follow through typecheck.
  */
 
-/** O carte, așa cum apare în liste și carduri. */
-export interface CarteSumar {
+/** A book, as it appears in lists and cards. */
+export interface BookSummary {
   id: string
-  titlu: string
-  autor: string
-  coperta_url: string | null
-  categorii: string[]
-  rating_mediu: number | null
+  title: string
+  author: string
+  cover_url: string | null
+  categories: string[]
+  average_rating: number | null
 }
 
-/** O intrare din istoricul de lectură al utilizatorului. */
-export interface IntrareIstoric {
+/** An entry in the user's reading history. */
+export interface HistoryEntry {
   id: string
-  carte: CarteSumar
-  /** Nota dată de utilizator, 1-5. `null` dacă n-a evaluat încă. */
-  nota_utilizator: number | null
-  /** ISO 8601 — când a fost scanată sau marcată ca citită. */
-  citita_la: string
+  book: BookSummary
+  /** The user's rating, 1-5. `null` if not rated yet. */
+  user_rating: number | null
+  /** ISO 8601 — when it was scanned or marked as read. */
+  read_at: string
 }
 
 /**
- * O recomandare, cu explicația care o justifică.
+ * A recommendation, with the explanation that justifies it.
  *
- * Explicația nu e cosmetică: Modulul 6 e content-based, deci fiecare
- * recomandare *poate* fi motivată prin cărțile care au generat-o.
+ * The explanation isn't cosmetic: Module 6 is content-based, so each
+ * recommendation *can* be justified through the books that generated it.
  */
-export interface Recomandare {
+export interface Recommendation {
   id: string
-  carte: CarteSumar
-  /** Scorul de potrivire, 0-1. */
-  scor: number
-  /** Text de forma „pentru că ți-a plăcut X". */
-  explicatie: string
+  book: BookSummary
+  /** Match score, 0-1. */
+  score: number
+  /** Text of the form "because you liked X". */
+  explanation: string
 }
 
-/** Preferințele declarate ale utilizatorului. */
-export interface PreferinteUtilizator {
-  genuri_favorite: string[]
-  autori_favoriti: string[]
+/** The user's declared preferences. */
+export interface UserPreferences {
+  favorite_genres: string[]
+  favorite_authors: string[]
 }

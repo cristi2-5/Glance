@@ -1,9 +1,8 @@
-"""Excepții custom ale aplicației și handler-ele FastAPI asociate.
+"""Application custom exceptions and their associated FastAPI handlers.
 
-Fiecare excepție de domeniu moștenește `GlanceError` și poartă un
-`status_code` HTTP potrivit, astfel încât routerele să poată ridica erori
-semantice (`CarteNegasita`, `JobNegasit` etc.) fără să manipuleze direct
-`HTTPException`.
+Every domain exception inherits from `GlanceError` and carries a matching
+HTTP `status_code`, so routers can raise semantic errors (`BookNotFound`,
+`JobNotFound`, etc.) without manipulating `HTTPException` directly.
 """
 
 import structlog
@@ -14,7 +13,7 @@ logger = structlog.get_logger(__name__)
 
 
 class GlanceError(Exception):
-    """Clasă de bază pentru toate excepțiile de domeniu din Glance."""
+    """Base class for all domain exceptions in Glance."""
 
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR
 
@@ -23,53 +22,53 @@ class GlanceError(Exception):
         super().__init__(message)
 
 
-class ResursaNegasita(GlanceError):
-    """Ridicată când o resursă cerută (carte, job, utilizator) nu există."""
+class ResourceNotFound(GlanceError):
+    """Raised when a requested resource (book, job, user) does not exist."""
 
     status_code = status.HTTP_404_NOT_FOUND
 
 
-class AcccesInterzis(GlanceError):
-    """Ridicată când utilizatorul curent nu are drept de acces la resursă."""
+class AccessForbidden(GlanceError):
+    """Raised when the current user has no access rights to the resource."""
 
     status_code = status.HTTP_403_FORBIDDEN
 
 
-class DateInvalide(GlanceError):
-    """Ridicată când datele primite de la client sunt invalide semantic."""
+class InvalidData(GlanceError):
+    """Raised when the data received from the client is semantically invalid."""
 
     status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
-class CredentialeInvalide(GlanceError):
-    """Ridicată la autentificare eșuată (parolă greșită, token expirat)."""
+class InvalidCredentials(GlanceError):
+    """Raised on failed authentication (wrong password, expired token)."""
 
     status_code = status.HTTP_401_UNAUTHORIZED
 
 
-class ServiciuExternIndisponibil(GlanceError):
-    """Ridicată când un serviciu extern (Ollama, sursă de date) eșuează."""
+class ExternalServiceUnavailable(GlanceError):
+    """Raised when an external service (Ollama, data source) fails."""
 
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
 
-class FisierPreaMare(GlanceError):
-    """Ridicată când fișierul încărcat depășește dimensiunea maximă permisă."""
+class FileTooLarge(GlanceError):
+    """Raised when the uploaded file exceeds the maximum allowed size."""
 
     status_code = status.HTTP_413_CONTENT_TOO_LARGE
 
 
-class TipFisierNesuportat(GlanceError):
-    """Ridicată când tipul fișierului încărcat nu e printre cele acceptate."""
+class UnsupportedFileType(GlanceError):
+    """Raised when the uploaded file type is not among the accepted ones."""
 
     status_code = status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """Înregistrează handler-ele globale de excepții pe aplicația FastAPI.
+    """Registers the global exception handlers on the FastAPI application.
 
     Args:
-        app: Instanța FastAPI pe care se înregistrează handler-ele.
+        app: The FastAPI instance on which the handlers are registered.
     """
 
     @app.exception_handler(GlanceError)

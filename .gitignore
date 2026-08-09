@@ -8,11 +8,15 @@ venv/
 .ruff_cache/
 .pytest_cache/
 
-# Env & secrete
+# Env & secrets
 .env
 
-# Date locale (SQLite, Chroma)
+# Local data (SQLite, Chroma)
 backend/data/
+
+# Per-module dev notes (not published)
+backend/docs/
+frontend/docs/
 
 # IDE
 .vscode/

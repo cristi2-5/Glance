@@ -1,4 +1,4 @@
-/** Suprafață ridicată, folosită pentru grupuri de conținut. */
+/** A raised surface, used for content groups. */
 
 import type { ReactNode } from 'react'
 import { Pressable, StyleSheet, View, type ViewStyle } from 'react-native'
@@ -7,7 +7,7 @@ import { colors, radius, shadow, spacing } from '@/theme'
 
 interface CardProps {
   children: ReactNode
-  /** Când e dat, cardul devine apăsabil. */
+  /** When given, the card becomes pressable. */
   onPress?: () => void
   style?: ViewStyle
 }
@@ -18,7 +18,7 @@ export function Card({ children, onPress, style }: CardProps) {
       <Pressable
         accessibilityRole="button"
         onPress={onPress}
-        style={({ pressed }) => [styles.card, pressed ? styles.apasat : null, style]}
+        style={({ pressed }) => [styles.card, pressed ? styles.pressed : null, style]}
       >
         {children}
       </Pressable>
@@ -37,7 +37,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     ...shadow.soft,
   },
-  apasat: {
+  pressed: {
     backgroundColor: colors.surfaceMuted,
   },
 })

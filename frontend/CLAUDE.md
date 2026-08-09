@@ -1,199 +1,201 @@
-# CLAUDE.md — Glance (client mobil)
+# CLAUDE.md — Glance (mobile client)
 
-Acest fișier se încarcă automat la fiecare sesiune de lucru în `frontend/`. Nu-l repeta în prompturi — actualizează-l pe măsură ce proiectul avansează. Pentru backend, vezi `../CLAUDE.md`.
+This file is automatically loaded at every work session in `frontend/`. Don't repeat it in prompts — update it as the project progresses. For the backend, see `../CLAUDE.md`.
 
-## Regulă de pornire: verifică documentația versionată
+## Starting rule: check the versioned docs
 
-**Expo se schimbă rapid.** Înainte de a scrie cod care folosește un SDK Expo, citește documentația pentru versiunea exactă: <https://docs.expo.dev/versions/v54.0.0/>. API-uri schimbate recent și ușor de greșit din memorie:
+**Expo changes fast.** Before writing code that uses an Expo SDK API, read the docs for the exact version: <https://docs.expo.dev/versions/v54.0.0/>. APIs that changed recently and are easy to get wrong from memory:
 
-- `expo-camera` → componenta e `CameraView` + hook-ul `useCameraPermissions` (nu vechiul `Camera`).
-- `expo-image-manipulator` → API contextual `ImageManipulator.manipulate(uri).resize(...).renderAsync()`, apoi `.saveAsync(...)`. `manipulateAsync` există, dar e **deprecated**.
+- `expo-camera` → the component is `CameraView` + the `useCameraPermissions` hook (not the old `Camera`).
+- `expo-image-manipulator` → contextual API `ImageManipulator.manipulate(uri).resize(...).renderAsync()`, then `.saveAsync(...)`. `manipulateAsync` exists but is **deprecated**.
 
-Când tipurile din `node_modules` contrazic documentația, tipurile câștigă — sunt versiunea chiar instalată.
+When the types in `node_modules` contradict the docs, the types win — they're the version actually installed.
 
-### De ce SDK 54, nu „latest" (57)
+### Why SDK 54, not "latest" (57)
 
-Proiectul a fost scaffold-uit inițial cu `expo@latest`, care la acel moment însemna SDK 57. **Expo Go de pe telefon nu ține pasul cu npm** — mai ales pe iOS, unde review-ul Apple întârzie zile sau săptămâni publicarea versiunii de Expo Go compatibile cu un SDK nou. Simptomul: aplicația refuză să deschidă proiectul, cu un mesaj de incompatibilitate de SDK, chiar dacă Expo Go pare „la zi" din App Store.
+The project was originally scaffolded with `expo@latest`, which at the time meant SDK 57. **Expo Go on the phone doesn't keep pace with npm** — especially on iOS, where Apple review delays the compatible Expo Go release by days or weeks after a new SDK ships. Symptom: the app refuses to open the project, with an SDK-incompatibility message, even though Expo Go looks "up to date" in the App Store.
 
-Verifică întotdeauna ce SDK suportă build-ul *chiar instalat* de Expo Go (nu ce spune pagina de marketing) înainte de a alege versiunea `expo` din `package.json`. Dacă apare din nou o incompatibilitate, downgrade cu:
+Always check which SDK the *actually installed* Expo Go build supports (not what the marketing page says) before picking the `expo` version in `package.json`. If an incompatibility shows up again, downgrade with:
 
 ```bash
-npx expo install expo@^<versiunea-suportata>.0.0
+npx expo install expo@^<supported-version>.0.0
 rm -rf node_modules package-lock.json
 npm install
 npx expo install --fix
 ```
 
-După orice schimbare de SDK, verifică din nou `app.json` → `plugins`: fiecare pachet listat acolo trebuie să aibă efectiv un `app.plugin.js` (`ls node_modules/<pachet>/app.plugin.js`). Un pachet fără plugin real (ex. `expo-image`, `expo-status-bar` — niciunul nu are nevoie de plugin) face `expo config`/`expo start` să eșueze tăcut, fără mesaj, pe Node 22+ din cauza „type stripping" experimental lovind fișiere `.ts` din `node_modules`. Simptomul e un exit code 1 fără nicio linie pe stdout sau stderr — dacă se întâmplă asta, rulează direct `node node_modules/expo/node_modules/@expo/cli config --json` ca să vezi eroarea reală, care e ascunsă în spatele CLI-ului `npx expo`.
+After any SDK change, re-check `app.json` → `plugins`: every package listed there must actually have an `app.plugin.js` (`ls node_modules/<package>/app.plugin.js`). A package without a real plugin (e.g. `expo-image`, `expo-status-bar` — neither needs one) makes `expo config`/`expo start` fail silently, with no message, on Node 22+ because of experimental "type stripping" hitting `.ts` files inside `node_modules`. The symptom is exit code 1 with no stdout/stderr — if that happens, run `node node_modules/expo/node_modules/@expo/cli config --json` directly to see the real error, which is hidden behind the `npx expo` CLI.
 
-## Prezentare generală
+## Overview
 
-Clientul mobil pentru **Glance**: fotografiezi coperta unei cărți, aplicația recunoaște titlul și autorul, adună material din surse deschise, generează un rezumat prin RAG și oferă recomandări.
+The mobile client for **Glance**: you photograph a book cover, the app recognizes the title and author, gathers material from open sources, generates a summary via RAG, and offers recommendations.
 
-React Native + Expo SDK 54, TypeScript strict, expo-router. Backendul e local (FastAPI pe laptop) — clientul **nu** vorbește niciodată cu servicii cloud.
+React Native + Expo SDK 54, strict TypeScript, expo-router. The backend is local (FastAPI on the laptop) — the client **never** talks to cloud services.
 
-## Cum rulezi
+## How to run it
 
-Aplicația se testează pe **telefon fizic prin Expo Go** (decis explicit; emulatorul Android a fost respins — ~1.5 GB RAM pe un laptop cu 7.4 GB care rulează și Ollama).
+The app is tested on a **physical phone via Expo Go** (explicit decision; the Android emulator was rejected — ~1.5 GB RAM on a laptop with 7.4 GB that's also running Ollama).
 
 ```bash
-# 1. Backendul, cu --host 0.0.0.0 ca telefonul să-l vadă în LAN.
-#    Fără asta uvicorn ascultă doar pe 127.0.0.1 și aplicația dă „Nu mă pot conecta".
+# 1. Backend, with --host 0.0.0.0 so the phone can see it on the LAN.
+#    Without this uvicorn only listens on 127.0.0.1 and the app shows "Can't connect".
 cd backend && ./.venv/Scripts/python.exe -m uvicorn app.main:app --reload --host 0.0.0.0
 
-# 2. Metro, în alt terminal.
+# 2. Metro, in another terminal.
 cd frontend && npx expo start
-# → scanezi QR-ul cu Expo Go. Telefonul și laptopul pe aceeași rețea Wi-Fi.
+# → scan the QR code with Expo Go. Phone and laptop on the same Wi-Fi network.
 ```
 
-Adresa backendului **nu trebuie configurată**: `src/config/env.ts` o deduce din gazda Metro, deci merge pe orice rețea fără editat fișiere. Suprascrie cu `EXPO_PUBLIC_API_URL` în `.env` doar dacă backendul rulează pe altă mașină decât Metro.
+The backend address **doesn't need to be configured**: `src/config/env.ts` infers it from the Metro host, so it works on any network without editing files. Override with `EXPO_PUBLIC_API_URL` in `.env` only if the backend runs on a different machine than Metro.
 
-Referință: IP-ul Wi-Fi al laptopului de dezvoltare a fost `192.168.1.8`. Există și Tailscale (`100.76.52.49`) — instalat și pe telefon, permite folosirea aplicației în afara rețelei locale.
+Reference: the dev laptop's Wi-Fi IP was `192.168.1.8`. Tailscale is also set up (`100.76.52.49`) — installed on the phone too, allows using the app outside the local network.
 
-## Decizii de arhitectură (nu le rediscuta fără motiv nou)
+## Architecture decisions (don't revisit without a new reason)
 
-### Refresh-ul sesiunii e serializat (single-flight)
+### Session refresh is serialized (single-flight)
 
-**Cea mai importantă decizie din client.** Backendul rotește refresh tokenul: la fiecare `/auth/refresh` reușit, tokenul folosit devine `revoked` (vezi `backend/docs/module-1-auth.md`). Dacă două cereri primesc 401 simultan și fiecare pornește propriul refresh, a doua folosește un token deja consumat, ia 401 și deconectează utilizatorul fără motiv.
+**The most important decision in the client.** The backend rotates the refresh token: on every successful `/auth/refresh`, the token used becomes `revoked` (see `backend/docs/module-1-auth.md`, local/gitignored). If two requests get a 401 at the same time and each starts its own refresh, the second one uses an already-consumed token, gets a 401, and logs the user out for no reason.
 
-`src/api/client.ts` ține o singură `promisiuneRefresh`. Prima cerere care ia 401 o creează; restul se atașează la ea. Refresh-ul folosește `clientBrut`, un axios *fără* interceptors — altfel un 401 la refresh ar declanșa un nou refresh, la infinit.
+`src/api/client.ts` keeps a single `refreshPromise`. The first request that gets a 401 creates it; the rest attach to it. The refresh uses `rawClient`, an axios instance *without* interceptors — otherwise a 401 on the refresh call itself would trigger another refresh, infinitely.
 
-Simptomul unei regresii aici: delogări aleatorii, greu de reprodus, apărute la ecrane care fac mai multe cereri deodată.
+The symptom of a regression here: random, hard-to-reproduce logouts, showing up on screens that fire several requests at once.
 
-### Normalizarea erorilor într-un singur loc
+### Error normalization in a single place
 
-Backendul răspunde cu două forme de `detail`: string pentru excepțiile de domeniu (`GlanceError`), array de obiecte pentru validarea Pydantic (422). `src/api/errors.ts` le aplatizează în `ApiError`, cu `message` gata de afișat și `eroriCampuri` pentru formulare. Nicio componentă nu citește `error.response.data` direct.
+The backend responds with two shapes of `detail`: a string for domain exceptions (`GlanceError`), an array of objects for Pydantic validation (422). `src/api/errors.ts` flattens both into `ApiError`, with a display-ready `message` and `fieldErrors` for forms. No component reads `error.response.data` directly.
 
-### Tokenurile în SecureStore, cu oglindă în memorie
+### Tokens in SecureStore, mirrored in memory
 
-`expo-secure-store` folosește Keychain/Keystore. Peste el, `src/api/tokenStore.ts` ține o copie în memorie, pentru că interceptorul citește tokenul la fiecare cerere, iar un acces la Keychain per request s-ar simți.
+`expo-secure-store` uses Keychain/Keystore. On top of it, `src/api/tokenStore.ts` keeps an in-memory copy, because the interceptor reads the token on every request, and a Keychain access per request would be noticeable.
 
-### Starea sesiunii are trei valori, nu două
+### Session state has three values, not two
 
-`'necunoscuta' | 'autentificat' | 'neautentificat'`. Fără `'necunoscuta'`, un utilizator deja autentificat vede o clipă ecranul de login la pornire, până se verifică tokenul din Keychain. Splash screen-ul rămâne vizibil până când starea se rezolvă **și** fonturile s-au încărcat.
+`'unknown' | 'authenticated' | 'unauthenticated'`. Without `'unknown'`, an already-authenticated user briefly sees the login screen on startup, until the token is verified against the Keychain. The splash screen stays visible until the state resolves **and** the fonts have loaded.
 
-### Mock-urile sunt marcate vizibil
+### Mocks are visibly marked
 
-Ecranele pentru Modulele 3-6 (încă neimplementate pe backend) folosesc date din `src/mocks/`, dar afișează întotdeauna un `<NotaDemo>` sau un banner. Un mock nemarcat e o minciună pe ecran — nu se poate distinge de un rezultat real în timpul testării.
+Screens for Modules 3-6 (not yet implemented on the backend) use data from `src/mocks/`, but always show a `<DemoNote>` or a banner. An unmarked mock is a lie on the screen — indistinguishable from a real result during testing.
 
-Comutarea la API real se face **într-un singur loc per domeniu**: `src/features/library/hooks.ts` (flag `DATE_DEMONSTRATIVE`) și `src/features/scan/mapper.ts`. Ecranele nu se modifică.
+Switching to the real API happens **in a single place per domain**: `src/features/library/hooks.ts` (the `DEMO_DATA` flag) and `src/features/scan/mapper.ts`. Screens don't change.
 
-### Redimensionarea imaginii se face pe client
+### Image resizing happens on the client
 
-Backendul respinge upload-uri peste 8 MB cu 413. O poză de telefon depășește ușor pragul. `src/lib/imagine.ts` redimensionează la 1600 px și recomprimă JPEG la 0.85 *înainte* de upload — mai mult decât cei 768 px la care backendul reduce oricum pentru OCR, ca să nu-i luăm detaliile fine din titluri.
+The backend rejects uploads over 8 MB with 413. A phone photo easily exceeds that. `src/lib/imagine.ts` resizes to 1600 px and recompresses JPEG at 0.85 *before* upload — more than the 768 px the backend downsizes to anyway for OCR, so we don't lose fine detail from titles.
 
-### Protecția rutelor prin layout-uri, nu prin redirect-uri în ecrane
+### Route protection via layouts, not per-screen redirects
 
-`app/(app)/_layout.tsx` redirecționează spre `/login` fără sesiune; `app/(auth)/_layout.tsx` redirecționează spre `/` cu sesiune. Ecranele nu navighează manual după login — starea se schimbă, layout-ul reacționează. O singură sursă de adevăr pentru „unde ajunge utilizatorul".
+`app/(app)/_layout.tsx` redirects to `/login` without a session; `app/(auth)/_layout.tsx` redirects to `/` with a session. Screens don't navigate manually after login — the state changes, the layout reacts. A single source of truth for "where the user ends up".
 
-### `(app)` e un Stack care conține Tabs
+### `(app)` is a Stack that contains Tabs
 
-Ecranele de scanare trebuie să acopere tot ecranul, fără bara de tab-uri, dar tot sub protecția sesiunii. De aceea `(app)/_layout.tsx` e un `Stack` cu `(tabs)` ca prim ecran și `scan/*` alături, nu direct un `Tabs`.
+Scan screens need to cover the whole screen, without the tab bar, but still under session protection. That's why `(app)/_layout.tsx` is a `Stack` with `(tabs)` as its first screen and `scan/*` alongside it, not directly a `Tabs`.
 
-## Stack tehnologic
+## Tech stack
 
-| Nevoie | Librărie | Observații |
+| Need | Library | Notes |
 |---|---|---|
 | Framework | `expo` SDK 54 + `react-native` 0.81 | React 19.1 |
-| Navigare | `expo-router` | file-based; rutele sunt fișierele din `app/` |
-| Server state | `@tanstack/react-query` | `refetchInterval` face polling-ul pe job-uri |
-| Auth state | `zustand` | singurul state global |
-| HTTP | `axios` | interceptors pentru refresh |
-| Stocare tokenuri | `expo-secure-store` | Keychain / Keystore |
-| Cameră | `expo-camera` | `CameraView` + `useCameraPermissions` |
-| Imagini | `expo-image-manipulator`, `expo-image` | resize înainte de upload; cache de coperți |
-| Formulare | `react-hook-form` + `zod` v4 | `z.email()`, nu `z.string().email()` |
-| Fonturi | `@expo-google-fonts/fraunces`, `.../inter` | Fraunces = titluri, Inter = interfață |
-| Iconițe | `@expo/vector-icons` (Feather) | |
-| Stilizare | `StyleSheet` + tokens din `src/theme` | fără NativeWind — zero config Babel/Metro de întreținut |
+| Navigation | `expo-router` | file-based; routes are the files in `app/` |
+| Server state | `@tanstack/react-query` | `refetchInterval` does the job polling |
+| Auth state | `zustand` | the only global state |
+| HTTP | `axios` | interceptors for refresh |
+| Token storage | `expo-secure-store` | Keychain / Keystore |
+| Camera | `expo-camera` | `CameraView` + `useCameraPermissions` |
+| Images | `expo-image-manipulator`, `expo-image` | resize before upload; cover cache |
+| Forms | `react-hook-form` + `zod` v4 | `z.email()`, not `z.string().email()` |
+| Fonts | `@expo-google-fonts/fraunces`, `.../inter` | Fraunces = headings, Inter = UI |
+| Icons | `@expo/vector-icons` (Feather) | |
+| Styling | `StyleSheet` + tokens from `src/theme` | no NativeWind — zero Babel/Metro config to maintain |
 
-`react-dom` trebuie să coincidă exact cu versiunea lui `react` din SDK-ul curent (acum `19.1.0`). O nepotrivire aici produce ERESOLVE la orice `npm install` ulterior, tras de un pachet tranzitiv (`@expo/dom-webview` → `react-server-dom-webpack`). Nu rezolva asta cu `--legacy-peer-deps` — repinează `react-dom` la versiunea corectă și reinstalează curat.
+`react-dom` must match the `react` version from the current SDK exactly (currently `19.1.0`). A mismatch here causes ERESOLVE on any later `npm install`, pulled in by a transitive package (`@expo/dom-webview` → `react-server-dom-webpack`). Don't fix this with `--legacy-peer-deps` — repin `react-dom` to the correct version and reinstall clean.
 
-## Structură de directoare
+## Directory structure
 
 ```
 frontend/
-├── app/                            # expo-router — doar rutare și compoziție
-│   ├── _layout.tsx                 # providers, fonturi, restaurare sesiune, splash
+├── app/                            # expo-router — routing and composition only
+│   ├── _layout.tsx                 # providers, fonts, session restore, splash
 │   ├── (auth)/
-│   │   ├── _layout.tsx             # redirect → / dacă există sesiune
+│   │   ├── _layout.tsx             # redirect → / if a session exists
 │   │   ├── login.tsx
 │   │   └── register.tsx
 │   └── (app)/
-│       ├── _layout.tsx             # poarta de acces: redirect → /login fără sesiune
+│       ├── _layout.tsx             # access gate: redirect → /login without a session
 │       ├── (tabs)/
-│       │   ├── _layout.tsx         # bara de tab-uri
-│       │   ├── index.tsx           # Acasă — captură copertă
-│       │   ├── recomandari.tsx     # mock (Modulul 6)
-│       │   └── profil.tsx          # identitate reală + istoric/preferințe mock
+│       │   ├── _layout.tsx         # tab bar
+│       │   ├── index.tsx           # Home — cover capture
+│       │   ├── recomandari.tsx     # mock (Module 6)
+│       │   └── profil.tsx          # real identity + mock history/preferences
 │       └── scan/
-│           ├── camera.tsx          # captură, full-screen
-│           └── [jobId].tsx         # polling + rezultat
+│           ├── camera.tsx          # capture, full-screen
+│           └── [jobId].tsx         # polling + result
 ├── src/
 │   ├── api/
 │   │   ├── client.ts               # axios + single-flight refresh
-│   │   ├── tokenStore.ts           # SecureStore + oglindă în memorie
-│   │   ├── errors.ts               # ApiError, normalizarea celor două forme de `detail`
+│   │   ├── tokenStore.ts           # SecureStore + in-memory mirror
+│   │   ├── errors.ts               # ApiError, normalizes the two shapes of `detail`
 │   │   └── endpoints/              # auth, users, books, jobs
 │   ├── components/
 │   │   ├── ui/                     # Button, Input, Screen, Card, Chip, BannerEroare, NotaDemo
 │   │   └── book/                   # CardCarte, RatingStele
-│   ├── config/env.ts               # API_URL dedus din gazda Metro
+│   ├── config/env.ts               # API_URL inferred from the Metro host
 │   ├── features/
-│   │   ├── auth/schema.ts          # validare zod
-│   │   ├── scan/                   # hooks (upload + polling), mapper rezultat
-│   │   └── library/hooks.ts        # istoric/preferințe/recomandări — comutator mock
+│   │   ├── auth/schema.ts          # zod validation
+│   │   ├── scan/                   # hooks (upload + polling), result mapper
+│   │   └── library/hooks.ts        # history/preferences/recommendations — mock switch
 │   ├── lib/                        # imagine.ts, queryClient.ts
-│   ├── mocks/                      # date demonstrative, tipate ca API-ul real
+│   ├── mocks/                      # demo data, typed like the real API
 │   ├── store/authStore.ts
 │   ├── theme/                      # colors, typography, spacing, fonts
-│   └── types/                      # api.ts (oglindește Pydantic), biblioteca.ts (Modulul 6)
+│   └── types/                      # api.ts (mirrors Pydantic), biblioteca.ts (Module 6)
 └── .env.example
 ```
 
-`app/` conține doar rutare; logica stă în `src/features/`. Regula practică: dacă un fișier din `app/` depășește ~200 de linii sau conține logică de rețea, mută-o într-un hook de feature.
+Filenames under `app/` and `src/` stayed as originally chosen (e.g. `recomandari.tsx`, `profil.tsx`, `CardCarte.tsx`, `imagine.ts`, `biblioteca.ts`) even after the Romanian→English identifier refactor — `app/` filenames are expo-router route segments, so renaming them would change live URLs; the `src/` ones were left unchanged for consistency. The *exported* symbols inside these files are English (e.g. `CardCarte.tsx` exports `BookCard`, `NotaDemo.tsx` exports `DemoNote`).
 
-## Module — status
+`app/` contains only routing; logic lives in `src/features/`. Rule of thumb: if a file under `app/` exceeds ~200 lines or contains network logic, move it into a feature hook.
 
-Frontendul avansează **în paralel cu backendul**, modul cu modul. Nu construi ecrane pentru module de backend care nu există decât pe mock-uri marcate vizibil.
+## Modules — status
 
-- [x] **Modulul 0: Fundație** — schelet Expo, TypeScript strict cu `noUncheckedIndexedAccess`, alias `@/*`, tokens de temă, fonturi, `env.ts` cu deducerea gazdei.
-      *Gata când:* `npx tsc --noEmit` curat și `npx expo export` produce un bundle.
-- [x] **Modulul 1: Auth** — `tokenStore`, `client.ts` cu single-flight refresh, `ApiError`, `authStore` cu trei stări, ecrane Login/Register, protecția rutelor prin layout-uri.
-      *Gata când:* register → login → sesiune persistentă după restart → logout, toate verificate pe telefon.
-- [x] **Modulul 2: Schelet scanare** — `expo-camera`, redimensionare înainte de upload, `POST /books/analyze-cover`, polling pe `GET /jobs/{id}` cu oprire automată, ecran de rezultat cu stările `pending`/`running`/`done`/`failed`.
-      *Gata când:* o fotografie reală parcurge fluxul până la afișarea rezultatului placeholder.
-- [ ] **Modulul 3: Vision** — afișarea titlului/autorului reali cu scorul de încredere; **ecran de corecție manuală** când încrederea e sub prag. Tipul `RezultatAnaliza` există deja în `src/types/api.ts`.
-- [ ] **Modulul 4: Data fetcher** — coperți reale (`coperta_url` → `expo-image`), categorii, rating mediu.
-- [ ] **Modulul 5: RAG** — rezumat real cu citări; fiecare afirmație trebuie să ducă la o sursă apăsabilă. Structura `RecenzieSursa` e deja în ecranul de rezultat.
-- [ ] **Modulul 6: Recomandări** — înlocuiește mock-urile din `src/features/library/hooks.ts`, pune `DATE_DEMONSTRATIVE` pe `false`, verifică tipurile din `src/types/biblioteca.ts` contra schemei reale.
-- [ ] **Modulul 7: Rafinare** — animații (`react-native-reanimated` e deja instalat), stări goale, tratarea offline, temă întunecată (tokenii sunt structurați pentru asta).
+The frontend progresses **in parallel with the backend**, module by module. Don't build screens for backend modules that don't exist yet except on visibly-marked mocks.
 
-## Comenzi utile
+- [x] **Module 0: Foundation** — Expo scaffold, strict TypeScript with `noUncheckedIndexedAccess`, `@/*` alias, theme tokens, fonts, `env.ts` with host inference.
+      *Done when:* `npx tsc --noEmit` clean and `npx expo export` produces a bundle.
+- [x] **Module 1: Auth** — `tokenStore`, `client.ts` with single-flight refresh, `ApiError`, `authStore` with three states, Login/Register screens, route protection via layouts.
+      *Done when:* register → login → session persists across restart → logout, all verified on the phone.
+- [x] **Module 2: Scan skeleton** — `expo-camera`, resize before upload, `POST /books/analyze-cover`, polling on `GET /jobs/{id}` with automatic stop, result screen with `pending`/`running`/`done`/`failed` states.
+      *Done when:* a real photo goes through the flow up to displaying the placeholder result.
+- [ ] **Module 3: Vision** — display the real title/author with confidence score; **manual-correction screen** when confidence is below threshold. The `AnalysisResult` type already exists in `src/types/api.ts`.
+- [ ] **Module 4: Data fetcher** — real covers (`cover_url` → `expo-image`), categories, average rating.
+- [ ] **Module 5: RAG** — real summary with citations; every claim must link to a tappable source. The `SourceReview` structure is already in the result screen.
+- [ ] **Module 6: Recommendations** — replace the mocks in `src/features/library/hooks.ts`, set `DEMO_DATA` to `false`, check the types in `src/types/biblioteca.ts` against the real schema.
+- [ ] **Module 7: Polish** — animations (`react-native-reanimated` already installed), empty states, offline handling, dark theme (tokens are structured for it).
+
+## Useful commands
 
 ```bash
-npx expo start                     # pornește Metro (QR pentru Expo Go)
-npx expo start --clear             # când Metro servește un bundle vechi
-npx tsc --noEmit                   # typecheck — rulează-l înainte de fiecare commit
-npx expo export --platform android # verifică fără telefon că totul se împachetează
-npx expo install <pachet>          # NU `npm install` pentru pachete Expo — alege versiunea compatibilă cu SDK-ul
+npx expo start                     # start Metro (QR for Expo Go)
+npx expo start --clear             # when Metro serves a stale bundle
+npx tsc --noEmit                   # typecheck — run before every commit
+npx expo export --platform android # verify without a phone that everything bundles
+npx expo install <package>         # NOT `npm install` for Expo packages — picks the SDK-compatible version
 ```
 
-## Convenții de cod
+## Code conventions
 
-- **Type hints stricte.** `strict` + `noUncheckedIndexedAccess`. Fără `any` nejustificat, fără `as` care ascunde o nepotrivire reală (excepția documentată: `FormData` cu fișiere locale în React Native).
-- **Docstrings** pe fiecare modul, componentă exportată și funcție publică — ce face, parametri, ce returnează. Explică *de ce*, nu *ce*, când decizia nu e evidentă.
-- **Denumiri**: română pentru domeniu (`carte`, `recenzii`, `utilizator`, `analiza`), engleză pentru primitive tehnice standard. Concret: props-urile componentelor UI generice sunt în engleză (`label`, `loading`, `disabled`), iar componentele de domeniu și logica de business sunt în română (`CardCarte`, `pregatesteCopertaPentruUpload`).
-- **Fără culori sau spații literale** în componente. Totul din `src/theme`.
-- **Fără `console.log`** în cod care rămâne. Pentru diagnostic pe telefon, folosește ecranul — utilizatorul nu vede terminalul Metro.
-- **Fiecare ecran tratează explicit patru stări**: încărcare, gol, eroare, succes. Un ecran care presupune că datele există e un ecran care va crăpa.
-- **Tipurile din `src/types/api.ts` sunt contractul.** Când backendul se schimbă, actualizează-le *întâi*; typecheck-ul arată apoi ce ecrane trebuie ajustate.
+- **Strict type hints.** `strict` + `noUncheckedIndexedAccess`. No unjustified `any`, no `as` that hides a real mismatch (documented exception: `FormData` with local files in React Native).
+- **Docstrings** on every module, exported component, and public function — what it does, parameters, return value. Explain *why*, not *what*, when the decision isn't obvious.
+- **Naming**: English throughout, including domain terms — the codebase was translated from an earlier Romanian-first convention; don't reintroduce Romanian identifiers. Filenames were deliberately left unchanged (see the directory structure note above) even though the exported symbols inside them are English.
+- **No literal colors or spacing** in components. Everything from `src/theme`.
+- **No `console.log`** in code that stays. For on-phone diagnostics, use the screen — the user doesn't see the Metro terminal.
+- **Every screen explicitly handles four states**: loading, empty, error, success. A screen that assumes data exists is a screen that will crash.
+- **The types in `src/types/api.ts` are the contract.** When the backend changes, update them *first*; the typecheck then shows which screens need adjusting.
 
-## Reguli stricte
+## Strict rules
 
-- Niciun apel către servicii cloud. Backendul local e singura destinație de rețea.
-- `.env` niciodată în git — doar `.env.example`.
-- Tokenurile doar în `expo-secure-store`, niciodată în `AsyncStorage` sau într-un store în memorie persistat pe disc.
-- Nu adăuga pachete Expo cu `npm install` — folosește `npx expo install`.
-- Un modul per sesiune, verificat pe telefon, apoi următorul.
-- Mock-urile se marchează vizibil, întotdeauna.
+- No calls to cloud services. The local backend is the only network destination.
+- `.env` never in git — only `.env.example`.
+- Tokens only in `expo-secure-store`, never in `AsyncStorage` or an in-memory store persisted to disk.
+- Don't add Expo packages with `npm install` — use `npx expo install`.
+- One module per session, verified on the phone, then the next.
+- Mocks are always visibly marked.

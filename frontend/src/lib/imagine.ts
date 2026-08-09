@@ -1,68 +1,68 @@
 /**
- * Pregătirea fotografiei de copertă înainte de upload.
+ * Preparing the cover photo before upload.
  *
- * O poză făcută cu un telefon modern are 8-16 MP și depășește ușor limita de
- * 8 MB a backendului (`MAX_UPLOAD_SIZE_BYTES`). Redimensionăm și recomprimăm
- * *local*, ca să nu încasăm 413 după ce am irosit secunde bune de upload pe
+ * A photo taken with a modern phone is 8-16 MP and easily exceeds the
+ * backend's 8 MB limit (`MAX_UPLOAD_SIZE_BYTES`). We resize and recompress
+ * *locally*, so we don't get a 413 after wasting good seconds uploading over
  * Wi-Fi.
  *
- * API-ul folosit e cel contextual din SDK 57 (`ImageManipulator.manipulate`),
- * nu `manipulateAsync`, care e marcat deprecated.
+ * The API used is the contextual one from SDK 57 (`ImageManipulator.manipulate`),
+ * not `manipulateAsync`, which is marked deprecated.
  */
 
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator'
 
 /**
- * Lățimea maximă trimisă spre backend.
+ * Maximum width sent to the backend.
  *
- * Backendul redimensionează oricum la 768 px pentru OCR, dar îi lăsăm o marjă:
- * OCR-ul se descurcă mai bine cu detaliile fine dintr-un titlu mic dacă
- * primește o imagine mai bogată decât ținta lui finală.
+ * The backend resizes to 768 px for OCR anyway, but we leave it some margin:
+ * OCR handles fine details in a small title better if it receives a richer
+ * image than its final target.
  */
-const LATIME_MAXIMA_PX = 1600
+const MAX_WIDTH_PX = 1600
 
-/** Calitatea JPEG a imaginii trimise. 0.85 e limita de la care artefactele încep să afecteze OCR-ul. */
-const CALITATE_JPEG = 0.85
+/** JPEG quality of the uploaded image. 0.85 is the point past which artifacts start affecting OCR. */
+const JPEG_QUALITY = 0.85
 
-/** Rezultatul pregătirii unei imagini pentru upload. */
-export interface ImaginePregatita {
+/** The result of preparing an image for upload. */
+export interface PreparedImage {
   uri: string
   width: number
   height: number
 }
 
 /**
- * Redimensionează și recomprimă o fotografie de copertă.
+ * Resizes and recompresses a cover photo.
  *
  * Args:
- *   uri: URI-ul local al fotografiei (din `takePictureAsync`).
- *   latimeOriginala: Lățimea imaginii sursă, dacă e cunoscută. Când e sub
- *     `LATIME_MAXIMA_PX`, se sare peste redimensionare ca să nu mărim artificial
- *     o imagine mică — upscaling-ul nu adaugă informație, doar dimensiune.
+ *   uri: The local URI of the photo (from `takePictureAsync`).
+ *   originalWidth: The width of the source image, if known. When it's below
+ *     `MAX_WIDTH_PX`, resizing is skipped so we don't artificially enlarge a
+ *     small image — upscaling adds no information, only size.
  *
  * Returns:
- *   Imaginea pregătită, ca fișier JPEG în directorul cache.
+ *   The prepared image, as a JPEG file in the cache directory.
  */
-export async function pregatesteCopertaPentruUpload(
+export async function prepareCoverForUpload(
   uri: string,
-  latimeOriginala?: number
-): Promise<ImaginePregatita> {
+  originalWidth?: number
+): Promise<PreparedImage> {
   const context = ImageManipulator.manipulate(uri)
 
-  const trebuieRedimensionata = latimeOriginala === undefined || latimeOriginala > LATIME_MAXIMA_PX
-  if (trebuieRedimensionata) {
-    context.resize({ width: LATIME_MAXIMA_PX })
+  const needsResize = originalWidth === undefined || originalWidth > MAX_WIDTH_PX
+  if (needsResize) {
+    context.resize({ width: MAX_WIDTH_PX })
   }
 
-  const imagineRandata = await context.renderAsync()
-  const rezultat = await imagineRandata.saveAsync({
+  const renderedImage = await context.renderAsync()
+  const result = await renderedImage.saveAsync({
     format: SaveFormat.JPEG,
-    compress: CALITATE_JPEG,
+    compress: JPEG_QUALITY,
   })
 
   return {
-    uri: rezultat.uri,
-    width: rezultat.width,
-    height: rezultat.height,
+    uri: result.uri,
+    width: result.width,
+    height: result.height,
   }
 }

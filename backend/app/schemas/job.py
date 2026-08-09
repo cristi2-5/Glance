@@ -1,4 +1,4 @@
-"""Scheme Pydantic pentru job-uri asincrone."""
+"""Pydantic schemas for asynchronous jobs."""
 
 from datetime import datetime
 from typing import Any
@@ -7,13 +7,13 @@ from pydantic import BaseModel, ConfigDict
 
 
 class JobCreated(BaseModel):
-    """Răspunsul la crearea unui job — doar id-ul, pentru polling pe `GET /jobs/{id}`."""
+    """Response for job creation — just the id, for polling on `GET /jobs/{id}`."""
 
     job_id: int
 
 
 class JobPublic(BaseModel):
-    """Reprezentarea publică a unui job, așa cum e expusă proprietarului lui."""
+    """The public representation of a job, as exposed to its owner."""
 
     model_config = ConfigDict(from_attributes=True)
 

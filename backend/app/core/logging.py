@@ -1,7 +1,7 @@
-"""Configurare `structlog` pentru toată aplicația.
+"""`structlog` configuration for the whole application.
 
-Se apelează o singură dată, la pornirea aplicației (`main.py`). După
-configurare, orice modul obține un logger cu `structlog.get_logger(__name__)`.
+Called once, at application startup (`main.py`). After configuration, any
+module obtains a logger with `structlog.get_logger(__name__)`.
 """
 
 import logging
@@ -11,10 +11,10 @@ import structlog
 
 
 def configure_logging(debug: bool = False) -> None:
-    """Configurează `structlog` cu output JSON structurat.
+    """Configures `structlog` with structured JSON output.
 
     Args:
-        debug: Dacă e True, nivelul minim de log e DEBUG; altfel INFO.
+        debug: If True, the minimum log level is DEBUG; otherwise INFO.
     """
     log_level = logging.DEBUG if debug else logging.INFO
 

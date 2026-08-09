@@ -1,37 +1,37 @@
-/** Rating cu stele, pe o scară de 5. Afișează și valoarea numerică. */
+/** Star rating, on a 5-point scale. Also shows the numeric value. */
 
 import { Feather } from '@expo/vector-icons'
 import { StyleSheet, Text, View } from 'react-native'
 
 import { colors, spacing, typography } from '@/theme'
 
-interface RatingSteleProps {
-  /** Valoarea medie, 0-5. */
-  valoare: number
-  /** Dimensiunea unei stele în px. */
-  marime?: number
-  afiseazaValoarea?: boolean
+interface RatingStarsProps {
+  /** The average value, 0-5. */
+  value: number
+  /** The size of a star in px. */
+  size?: number
+  showValue?: boolean
 }
 
-const NUMAR_STELE = 5
+const STAR_COUNT = 5
 
-export function RatingStele({ valoare, marime = 14, afiseazaValoarea = true }: RatingSteleProps) {
-  const valoareRotunjita = Math.round(valoare)
+export function RatingStars({ value, size = 14, showValue = true }: RatingStarsProps) {
+  const roundedValue = Math.round(value)
 
   return (
-    <View accessibilityLabel={`Rating ${valoare.toFixed(1)} din 5`} style={styles.container}>
-      <View style={styles.stele}>
-        {Array.from({ length: NUMAR_STELE }, (_, index) => (
+    <View accessibilityLabel={`Rating ${value.toFixed(1)} out of 5`} style={styles.container}>
+      <View style={styles.stars}>
+        {Array.from({ length: STAR_COUNT }, (_, index) => (
           <Feather
-            color={index < valoareRotunjita ? colors.amber : colors.borderStrong}
+            color={index < roundedValue ? colors.amber : colors.borderStrong}
             key={index}
             name="star"
-            size={marime}
+            size={size}
           />
         ))}
       </View>
 
-      {afiseazaValoarea ? <Text style={styles.valoare}>{valoare.toFixed(1)}</Text> : null}
+      {showValue ? <Text style={styles.value}>{value.toFixed(1)}</Text> : null}
     </View>
   )
 }
@@ -42,11 +42,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
   },
-  stele: {
+  stars: {
     flexDirection: 'row',
     gap: 2,
   },
-  valoare: {
+  value: {
     ...typography.caption,
     color: colors.inkMuted,
   },

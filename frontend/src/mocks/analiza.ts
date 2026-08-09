@@ -1,54 +1,56 @@
 /**
- * Date demonstrative pentru ecranele care depind de module de backend
- * încă neimplementate (Modulele 3-6).
+ * Demo data for screens that depend on backend modules not yet
+ * implemented (Modules 3-6).
  *
- * Respectă exact tipurile din `src/types/api.ts`. Când backendul începe să
- * întoarcă date reale, ecranele nu se schimbă — doar mapper-ul încetează să
- * mai cadă pe mock.
+ * Respects exactly the types in `src/types/api.ts`. Once the backend
+ * starts returning real data, the screens don't change — only the mapper
+ * stops falling back to the mock.
  */
 
-import type { RezultatAnaliza } from '@/types/api'
+import type { AnalysisResult } from '@/types/api'
 
-export const ANALIZA_DEMO: RezultatAnaliza = {
-  titlu: 'Numele trandafirului',
-  autor: 'Umberto Eco',
-  incredere: 0.94,
-  rezumat:
-    'Într-o abație benedictină din nordul Italiei anului 1327, călugărul franciscan William de Baskerville ' +
-    'este chemat să medieze o dispută teologică, dar ajunge să investigheze o serie de morți suspecte. ' +
-    'Împreună cu novicele Adso, descoperă că firul crimelor duce spre biblioteca abației — un labirint ' +
-    'în care e ascunsă o carte pe care cineva ucide ca să o țină nedeschisă. Romanul îmbină ancheta ' +
-    'polițistă cu eseul despre semiotică, erezie și puterea cărților.',
-  coperta_url: null,
-  categorii: ['Roman istoric', 'Mister', 'Literatură italiană'],
-  rating_mediu: 4.2,
-  recenzii: [
+export const DEMO_ANALYSIS: AnalysisResult = {
+  title: 'The Name of the Rose',
+  author: 'Umberto Eco',
+  confidence: 0.94,
+  summary:
+    'In a Benedictine abbey in northern Italy in the year 1327, the Franciscan friar William of ' +
+    'Baskerville is summoned to mediate a theological dispute, but ends up investigating a series of ' +
+    'suspicious deaths. Together with the novice Adso, he discovers that the thread of the murders ' +
+    "leads to the abbey's library — a labyrinth where a book is hidden that someone is willing to " +
+    'kill to keep closed. The novel blends a detective investigation with an essay on semiotics, ' +
+    'heresy, and the power of books.',
+  cover_url: null,
+  categories: ['Historical fiction', 'Mystery', 'Italian literature'],
+  average_rating: 4.2,
+  reviews: [
     {
       id: 'wiki-reception-1',
-      sursa: 'wikipedia',
-      titlu_sursa: 'Reception',
-      extras:
-        'Romanul a fost primit ca o reușită rară: un policier medieval care funcționează deopotrivă ca ' +
-        'lectură populară și ca tratat despre interpretare. Criticii au remarcat densitatea referințelor, ' +
-        'considerată de unii o barieră, de alții tocmai sursa plăcerii.',
+      source: 'wikipedia',
+      source_title: 'Reception',
+      excerpt:
+        'The novel was received as a rare achievement: a medieval murder mystery that works equally ' +
+        'well as popular reading and as a treatise on interpretation. Critics noted the density of its ' +
+        'references, seen by some as a barrier and by others as precisely the source of its pleasure.',
       url: 'https://en.wikipedia.org/wiki/The_Name_of_the_Rose',
     },
     {
       id: 'ol-subjects-1',
-      sursa: 'open_library',
-      titlu_sursa: 'Descriere Open Library',
-      extras:
-        'Primul roman al semioticianului Umberto Eco, publicat în 1980, tradus în peste 40 de limbi. ' +
-        'Este citat frecvent ca exemplu de roman postmodern accesibil publicului larg.',
+      source: 'open_library',
+      source_title: 'Open Library description',
+      excerpt:
+        "The first novel by semiotician Umberto Eco, published in 1980, translated into more than 40 " +
+        'languages. It is frequently cited as an example of a postmodern novel accessible to a wide ' +
+        'audience.',
       url: 'https://openlibrary.org/works/OL27479W',
     },
     {
       id: 'gb-description-1',
-      sursa: 'google_books',
-      titlu_sursa: 'Descriere editor',
-      extras:
-        'O anchetă tulburătoare într-o abație în care moartea pare să urmeze tiparul Apocalipsei, ' +
-        'spusă de un narator ajuns la capătul vieții.',
+      source: 'google_books',
+      source_title: "Publisher's description",
+      excerpt:
+        'A troubling investigation in an abbey where death seems to follow the pattern of the ' +
+        'Apocalypse, told by a narrator who has reached the end of his life.',
       url: null,
     },
   ],

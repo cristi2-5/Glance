@@ -1,13 +1,13 @@
 /**
- * Scara tipografică Glance.
+ * The Glance type scale.
  *
- * Două familii, cu roluri stricte:
- * - **Fraunces** (serif) — titluri, nume de cărți, citate. Dă tonul editorial.
- * - **Inter** (sans) — tot restul interfeței: butoane, etichete, corp de text.
+ * Two families, with strict roles:
+ * - **Fraunces** (serif) — headings, book titles, quotes. Sets the editorial tone.
+ * - **Inter** (sans) — everything else in the UI: buttons, labels, body copy.
  *
- * Numele fonturilor trebuie să coincidă exact cu cheile încărcate în
- * `useAppFonts` (`src/theme/fonts.ts`), altfel React Native cade tăcut
- * pe fontul de sistem, fără eroare.
+ * The font names must match exactly the keys loaded in `useAppFonts`
+ * (`src/theme/fonts.ts`), otherwise React Native silently falls back to the
+ * system font, without an error.
  */
 
 import type { TextStyle } from 'react-native'
@@ -25,68 +25,68 @@ export const fontFamily = {
 } as const
 
 /**
- * Stiluri gata de aplicat pe `<Text>`. Preferă-le în locul combinării
- * manuale de `fontSize` + `fontFamily`, ca scara să rămână consistentă.
+ * Styles ready to apply to `<Text>`. Prefer these over manually combining
+ * `fontSize` + `fontFamily`, so the scale stays consistent.
  */
 export const typography = {
-  /** Titlul unui ecran mare (Home, ecranul de rezultat). */
+  /** Title of a large screen (Home, the result screen). */
   displayLarge: {
     fontFamily: fontFamily.displayBold,
     fontSize: 34,
     lineHeight: 41,
     letterSpacing: -0.5,
   },
-  /** Titlul unei cărți în ecranul de rezultat. */
+  /** A book's title on the result screen. */
   displayMedium: {
     fontFamily: fontFamily.displaySemiBold,
     fontSize: 27,
     lineHeight: 34,
     letterSpacing: -0.3,
   },
-  /** Titluri de secțiune ("Recomandări pentru tine"). */
+  /** Section titles ("Recommended for you"). */
   displaySmall: {
     fontFamily: fontFamily.displaySemiBold,
     fontSize: 21,
     lineHeight: 28,
     letterSpacing: -0.2,
   },
-  /** Titlul unei cărți în listă/card. */
+  /** A book's title in a list/card. */
   titleCard: {
     fontFamily: fontFamily.displayMedium,
     fontSize: 17,
     lineHeight: 23,
   },
-  /** Corp de text pentru rezumate — generos la lineHeight, se citește mult. */
+  /** Body copy for summaries — generous lineHeight, meant for extended reading. */
   bodyReading: {
     fontFamily: fontFamily.bodyRegular,
     fontSize: 16,
     lineHeight: 26,
   },
-  /** Corp de text standard în interfață. */
+  /** Standard UI body copy. */
   body: {
     fontFamily: fontFamily.bodyRegular,
     fontSize: 15,
     lineHeight: 22,
   },
-  /** Text secundar: autor, metadate, ajutor sub input-uri. */
+  /** Secondary text: author, metadata, help text under inputs. */
   caption: {
     fontFamily: fontFamily.bodyRegular,
     fontSize: 13,
     lineHeight: 18,
   },
-  /** Etichete de buton. */
+  /** Button labels. */
   button: {
     fontFamily: fontFamily.bodySemiBold,
     fontSize: 16,
     lineHeight: 20,
   },
-  /** Etichete de câmp și titluri de tab. */
+  /** Field labels and tab titles. */
   label: {
     fontFamily: fontFamily.bodyMedium,
     fontSize: 13,
     lineHeight: 17,
   },
-  /** Text mic, majuscule rărite — pentru eyebrow-uri deasupra titlurilor. */
+  /** Small, letter-spaced uppercase text — for eyebrows above headings. */
   overline: {
     fontFamily: fontFamily.bodySemiBold,
     fontSize: 11,

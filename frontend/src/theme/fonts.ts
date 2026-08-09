@@ -1,8 +1,8 @@
 /**
- * Încărcarea fonturilor aplicației.
+ * Loading the app's fonts.
  *
- * Cheile din obiectul pasat lui `useFonts` devin numele folosibile în
- * `fontFamily`. Trebuie să coincidă exact cu valorile din
+ * The keys in the object passed to `useFonts` become the names usable in
+ * `fontFamily`. They must match exactly the values in
  * `src/theme/typography.ts`.
  */
 
@@ -22,15 +22,15 @@ import {
 import { useFonts } from 'expo-font'
 
 /**
- * Încarcă familiile Fraunces și Inter.
+ * Loads the Fraunces and Inter font families.
  *
  * Returns:
- *   `[incarcate, eroare]` — `incarcate` devine `true` când toate fonturile
- *   sunt disponibile. Ecranul de splash trebuie ținut vizibil până atunci,
- *   altfel interfața pâlpâie cu fontul de sistem.
+ *   `[loaded, error]` — `loaded` becomes `true` once all fonts are
+ *   available. The splash screen must be kept visible until then, otherwise
+ *   the UI flashes with the system font.
  */
 export function useAppFonts(): [boolean, Error | null] {
-  const [incarcate, eroare] = useFonts({
+  const [loaded, error] = useFonts({
     Fraunces_400Regular,
     Fraunces_400Regular_Italic,
     Fraunces_500Medium,
@@ -42,5 +42,5 @@ export function useAppFonts(): [boolean, Error | null] {
     Inter_700Bold,
   })
 
-  return [incarcate, eroare]
+  return [loaded, error]
 }

@@ -1,4 +1,4 @@
-"""Modelul `User` — cont de utilizator autentificat."""
+"""The `User` model — an authenticated user account."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -13,14 +13,14 @@ if TYPE_CHECKING:
 
 
 class User(Base):
-    """Reprezintă un utilizator înregistrat al aplicației Glance.
+    """Represents a registered user of the Glance application.
 
     Attributes:
-        id: Identificator unic.
-        email: Adresa de email, unică, folosită la autentificare.
-        hashed_password: Hash-ul bcrypt al parolei (niciodată parola în clar).
-        is_active: Dacă utilizatorul poate încă să se autentifice.
-        created_at: Momentul creării contului (UTC).
+        id: Unique identifier.
+        email: The email address, unique, used for authentication.
+        hashed_password: The bcrypt hash of the password (never the plaintext password).
+        is_active: Whether the user can still authenticate.
+        created_at: The moment the account was created (UTC).
     """
 
     __tablename__ = "users"

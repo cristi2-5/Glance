@@ -1,7 +1,7 @@
-"""Configurația aplicației, citită din variabile de mediu / fișierul .env.
+"""Application configuration, read from environment variables / the .env file.
 
-Toate valorile configurabile (căi, chei, parametri Ollama) trec prin acest
-modul. Nimic nu e hardcodat direct în cod.
+All configurable values (paths, keys, Ollama parameters) go through this
+module. Nothing is hardcoded directly in the code.
 """
 
 from functools import lru_cache
@@ -13,11 +13,11 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
-    """Setările aplicației Glance.
+    """Settings for the Glance application.
 
-    Valorile sunt citite din variabile de mediu sau dintr-un fișier `.env`
-    aflat în directorul `backend/`. Vezi `.env.example` pentru cheile
-    disponibile.
+    Values are read from environment variables or from a `.env` file
+    located in the `backend/` directory. See `.env.example` for the
+    available keys.
     """
 
     model_config = SettingsConfigDict(
@@ -26,18 +26,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Aplicație
+    # Application
     app_name: str = "Glance"
     debug: bool = False
 
-    # Bază de date
+    # Database
     database_url: str = f"sqlite+aiosqlite:///{BACKEND_DIR / 'data' / 'glance.db'}"
 
     # Chroma (vector DB)
     chroma_persist_dir: str = str(BACKEND_DIR / "data" / "chroma")
 
     # Auth / JWT
-    jwt_secret_key: str = "schimba-aceasta-cheie-in-.env"
+    jwt_secret_key: str = "change-this-key-in-.env"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30
@@ -54,19 +54,19 @@ class Settings(BaseSettings):
 
     # CORS
     #
-    # Clientul mobil rulează nativ (Expo Go), unde CORS nu se aplică — lista
-    # asta contează doar pentru Expo Web și pentru pagina de test din `/dev`.
-    # Implicit permitem orice origine, pentru că serverul ascultă doar în
-    # rețeaua locală de dezvoltare. Restrânge lista înainte de orice expunere
-    # dincolo de LAN.
+    # The mobile client runs natively (Expo Go), where CORS does not apply —
+    # this list only matters for Expo Web and for the test page in `/dev`.
+    # By default we allow any origin, because the server only listens on the
+    # local development network. Restrict this list before any exposure
+    # beyond the LAN.
     cors_origins: list[str] = ["*"]
 
 
 @lru_cache
 def get_settings() -> Settings:
-    """Returnează instanța (cache-uită) de setări ale aplicației.
+    """Returns the (cached) application settings instance.
 
     Returns:
-        Instanța `Settings` populată din mediu / `.env`.
+        The `Settings` instance populated from the environment / `.env`.
     """
     return Settings()

@@ -1,4 +1,4 @@
-/** Ecranul de autentificare. */
+/** The login screen. */
 
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Link } from 'expo-router'
@@ -7,69 +7,69 @@ import { Controller, useForm } from 'react-hook-form'
 import { KeyboardAvoidingView, Platform, StyleSheet, Text, View } from 'react-native'
 
 import { ApiError } from '@/api/errors'
-import { BannerEroare } from '@/components/ui/BannerEroare'
+import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Screen } from '@/components/ui/Screen'
-import { schemaLogin, type DateLogin } from '@/features/auth/schema'
+import { loginSchema, type LoginData } from '@/features/auth/schema'
 import { useAuthStore } from '@/store/authStore'
 import { colors, spacing, typography } from '@/theme'
 
 export default function LoginScreen() {
-  const intra = useAuthStore((s) => s.intra)
-  const [eroareGenerala, setEroareGenerala] = useState<string | null>(null)
+  const login = useAuthStore((s) => s.login)
+  const [generalError, setGeneralError] = useState<string | null>(null)
 
   const {
     control,
     handleSubmit,
     setError,
     formState: { errors, isSubmitting },
-  } = useForm<DateLogin>({
-    resolver: zodResolver(schemaLogin),
+  } = useForm<LoginData>({
+    resolver: zodResolver(loginSchema),
     defaultValues: { email: '', password: '' },
   })
 
-  async function trimite(date: DateLogin) {
-    setEroareGenerala(null)
+  async function submit(data: LoginData) {
+    setGeneralError(null)
 
     try {
-      await intra(date)
-      // Redirecționarea o face `(auth)/_layout.tsx` când starea devine
-      // „autentificat" — nu navigăm manual, ca să existe o singură sursă
-      // de adevăr pentru unde ajunge utilizatorul.
-    } catch (eroare) {
-      if (eroare instanceof ApiError) {
-        const campuri = Object.entries(eroare.eroriCampuri)
+      await login(data)
+      // The redirect is handled by `(auth)/_layout.tsx` once the status
+      // becomes "authenticated" — we don't navigate manually, so there's a
+      // single source of truth for where the user ends up.
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const fields = Object.entries(error.fieldErrors)
 
-        for (const [camp, mesaj] of campuri) {
-          if (camp === 'email' || camp === 'password') {
-            setError(camp, { message: mesaj })
+        for (const [field, message] of fields) {
+          if (field === 'email' || field === 'password') {
+            setError(field, { message })
           }
         }
 
-        if (campuri.length === 0) {
-          setEroareGenerala(eroare.message)
+        if (fields.length === 0) {
+          setGeneralError(error.message)
         }
         return
       }
 
-      setEroareGenerala('A apărut o eroare neașteptată.')
+      setGeneralError('An unexpected error occurred.')
     }
   }
 
   return (
-    <Screen scrollable contentStyle={styles.continut}>
+    <Screen scrollable contentStyle={styles.content}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={styles.antet}>
+        <View style={styles.header}>
           <Text style={styles.eyebrow}>Glance</Text>
-          <Text style={styles.titlu}>Bine ai revenit</Text>
-          <Text style={styles.subtitlu}>
-            Fotografiază o copertă și află despre ce e cartea, în câteva secunde.
+          <Text style={styles.title}>Welcome back</Text>
+          <Text style={styles.subtitle}>
+            Photograph a cover and find out what the book is about, in a few seconds.
           </Text>
         </View>
 
-        <View style={styles.formular}>
-          {eroareGenerala ? <BannerEroare mesaj={eroareGenerala} /> : null}
+        <View style={styles.form}>
+          {generalError ? <ErrorBanner message={generalError} /> : null}
 
           <Controller
             control={control}
@@ -83,7 +83,7 @@ export default function LoginScreen() {
                 label="Email"
                 onBlur={onBlur}
                 onChangeText={onChange}
-                placeholder="nume@exemplu.ro"
+                placeholder="name@example.com"
                 value={value}
               />
             )}
@@ -97,7 +97,7 @@ export default function LoginScreen() {
                 autoCapitalize="none"
                 autoComplete="current-password"
                 error={errors.password?.message}
-                label="Parolă"
+                label="Password"
                 onBlur={onBlur}
                 onChangeText={onChange}
                 placeholder="••••••••"
@@ -108,19 +108,19 @@ export default function LoginScreen() {
           />
 
           <Button
-            label="Intră în cont"
+            label="Log in"
             loading={isSubmitting}
             onPress={() => {
-              void handleSubmit(trimite)()
+              void handleSubmit(submit)()
             }}
-            style={styles.buton}
+            style={styles.button}
           />
         </View>
 
-        <View style={styles.subsol}>
-          <Text style={styles.textSubsol}>Nu ai încă un cont?</Text>
+        <View style={styles.footer}>
+          <Text style={styles.footerText}>Don't have an account yet?</Text>
           <Link href="/register" style={styles.link}>
-            Creează unul
+            Create one
           </Link>
         </View>
       </KeyboardAvoidingView>
@@ -129,11 +129,11 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  continut: {
+  content: {
     flexGrow: 1,
     justifyContent: 'center',
   },
-  antet: {
+  header: {
     marginBottom: spacing.xxl,
     gap: spacing.sm,
   },
@@ -141,28 +141,28 @@ const styles = StyleSheet.create({
     ...typography.overline,
     color: colors.accent,
   },
-  titlu: {
+  title: {
     ...typography.displayLarge,
     color: colors.ink,
   },
-  subtitlu: {
+  subtitle: {
     ...typography.body,
     color: colors.inkMuted,
   },
-  formular: {
+  form: {
     gap: spacing.lg,
   },
-  buton: {
+  button: {
     marginTop: spacing.sm,
   },
-  subsol: {
+  footer: {
     marginTop: spacing.xxl,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     gap: spacing.xs,
   },
-  textSubsol: {
+  footerText: {
     ...typography.caption,
     color: colors.inkMuted,
   },

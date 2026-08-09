@@ -1,4 +1,4 @@
-"""Test pentru endpoint-ul de health-check."""
+"""Test for the health-check endpoint."""
 
 from httpx import AsyncClient
 

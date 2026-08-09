@@ -1,4 +1,4 @@
-/** Punctul unic de import pentru tema Glance. */
+/** Single import point for the Glance theme. */
 
 export { colors, type ColorToken } from './colors'
 export { fontFamily, typography, type TypographyToken } from './typography'

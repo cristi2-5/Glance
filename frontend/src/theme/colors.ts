@@ -1,50 +1,50 @@
 /**
- * Paleta Glance — hârtie caldă, cerneală espresso, accent teracotă.
+ * Glance palette — warm paper, espresso ink, terracotta accent.
  *
- * Nu folosi niciodată culori literale în componente; importă de aici.
- * Structura e pregătită pentru o temă întunecată viitoare: componentele
- * consumă `colors`, nu constantele individuale.
+ * Never use literal colors in components; import from here. The structure
+ * is prepared for a future dark theme: components consume `colors`, not the
+ * individual constants.
  */
 
 export const colors = {
-  /** Fundalul ecranelor — crem de hârtie, nu alb clinic. */
+  /** Screen background — creamy paper, not clinical white. */
   background: '#FBF7F0',
-  /** Suprafețe ridicate: carduri, foi modale. */
+  /** Raised surfaces: cards, modal sheets. */
   surface: '#FFFDF9',
-  /** Suprafață secundară pentru zone grupate (input-uri, chips). */
+  /** Secondary surface for grouped areas (inputs, chips). */
   surfaceMuted: '#F3EBDE',
 
-  /** Text principal — espresso, mai blând decât negrul pur. */
+  /** Primary text — espresso, softer than pure black. */
   ink: '#2B2118',
-  /** Text secundar: subtitluri, metadate. */
+  /** Secondary text: subtitles, metadata. */
   inkMuted: '#6B5D50',
-  /** Text terțiar: placeholder, note de subsol. */
+  /** Tertiary text: placeholder, footnotes. */
   inkFaint: '#9C8B7A',
-  /** Text pe fundal de accent. */
+  /** Text on an accent background. */
   inkInverse: '#FFFDF9',
 
-  /** Accent principal — teracotă. Butoane primare, elemente active. */
+  /** Primary accent — terracotta. Primary buttons, active elements. */
   accent: '#C4633F',
-  /** Varianta apăsată a accentului. */
+  /** Pressed variant of the accent. */
   accentPressed: '#A85234',
-  /** Fundal discret derivat din accent (badge-uri, evidențieri). */
+  /** Subtle background derived from the accent (badges, highlights). */
   accentSoft: '#F5E3DA',
 
-  /** Chihlimbar — stele de rating, evidențieri secundare. */
+  /** Amber — rating stars, secondary highlights. */
   amber: '#D9922A',
 
-  /** Stări semantice. */
+  /** Semantic states. */
   success: '#4A7C59',
   danger: '#B3402F',
   dangerSoft: '#F7E4E0',
 
-  /** Contururi și separatoare. */
+  /** Outlines and separators. */
   border: '#E5DACA',
   borderStrong: '#D2C2AC',
 
-  /** Overlay pentru modale și camera. */
+  /** Overlay for modals and the camera. */
   overlay: 'rgba(43, 33, 24, 0.55)',
-  /** Fundalul ecranului de cameră. */
+  /** Background of the camera screen. */
   cameraBackdrop: '#1A140F',
 } as const
 

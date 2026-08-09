@@ -1,1 +1,1 @@
-"""Scheme Pydantic (request/response) ale aplicației Glance."""
+"""Pydantic schemas (request/response) for the Glance application."""

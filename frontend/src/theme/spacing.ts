@@ -1,8 +1,8 @@
 /**
- * Spațiere, raze de colț și umbre.
+ * Spacing, corner radii, and shadows.
  *
- * Scara de spațiere e bazată pe 4 px. Folosește tokenii, nu numere literale —
- * altfel ritmul vertical al ecranelor se destramă pe nesimțite.
+ * The spacing scale is based on 4 px. Use the tokens, not literal numbers —
+ * otherwise the screens' vertical rhythm quietly falls apart.
  */
 
 import type { ViewStyle } from 'react-native'
@@ -26,11 +26,11 @@ export const radius = {
 } as const
 
 /**
- * Umbre discrete, calde (nu gri-albastru), potrivite pe fundal crem.
- * `elevation` acoperă Android, restul acoperă iOS.
+ * Subtle, warm shadows (not blue-gray), suited to a cream background.
+ * `elevation` covers Android, the rest covers iOS.
  */
 export const shadow = {
-  /** Carduri în repaus. */
+  /** Cards at rest. */
   soft: {
     shadowColor: '#2B2118',
     shadowOpacity: 0.06,
@@ -38,7 +38,7 @@ export const shadow = {
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
-  /** Elemente ridicate: coperți, foi modale. */
+  /** Raised elements: covers, modal sheets. */
   lifted: {
     shadowColor: '#2B2118',
     shadowOpacity: 0.12,

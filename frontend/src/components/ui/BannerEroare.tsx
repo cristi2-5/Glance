@@ -1,6 +1,6 @@
 /**
- * Bandă de eroare pentru mesaje care nu aparțin unui câmp anume
- * (credențiale greșite, backend inaccesibil).
+ * Error banner for messages that don't belong to a specific field
+ * (wrong credentials, backend unreachable).
  */
 
 import { Feather } from '@expo/vector-icons'
@@ -8,15 +8,15 @@ import { StyleSheet, Text, View } from 'react-native'
 
 import { colors, radius, spacing, typography } from '@/theme'
 
-interface BannerEroareProps {
-  mesaj: string
+interface ErrorBannerProps {
+  message: string
 }
 
-export function BannerEroare({ mesaj }: BannerEroareProps) {
+export function ErrorBanner({ message }: ErrorBannerProps) {
   return (
     <View accessibilityRole="alert" style={styles.container}>
       <Feather color={colors.danger} name="alert-circle" size={18} />
-      <Text style={styles.text}>{mesaj}</Text>
+      <Text style={styles.text}>{message}</Text>
     </View>
   )
 }

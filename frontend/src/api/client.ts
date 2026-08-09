@@ -1,113 +1,114 @@
 /**
- * Clientul HTTP al aplicației, cu reînnoire automată a sesiunii.
+ * The application's HTTP client, with automatic session renewal.
  *
- * ## De ce e refresh-ul serializat
+ * ## Why the refresh is serialized
  *
- * Backendul rotește refresh tokenul: la fiecare `/auth/refresh` reușit,
- * tokenul folosit e marcat `revoked` și se emite altul
- * (`backend/docs/module-1-auth.md`). Dacă două cereri primesc 401 în același
- * timp și fiecare pornește propriul refresh, a doua îl folosește pe cel deja
- * consumat, primește 401 și deconectează utilizatorul fără motiv.
+ * The backend rotates the refresh token: on every successful
+ * `/auth/refresh`, the token used is marked `revoked` and a new one is
+ * issued (`backend/docs/module-1-auth.md`). If two requests get a 401 at
+ * the same time and each starts its own refresh, the second one uses the
+ * already-consumed token, gets a 401, and logs the user out for no reason.
  *
- * De aceea toate cererile care au nevoie de un token nou așteaptă **aceeași**
- * promisiune (`promisiuneRefresh`). Prima cerere care ia 401 pornește refresh-ul;
- * restul se atașează la el și își reiau apelul cu tokenul rezultat.
+ * That's why every request that needs a new token awaits the **same**
+ * promise (`refreshPromise`). The first request to get a 401 starts the
+ * refresh; the rest attach to it and retry their call with the resulting
+ * token.
  */
 
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 
-import { API_URL, TIMEOUT_IMPLICIT_MS } from '@/config/env'
-import type { RaspunsTokenuri } from '@/types/api'
+import { API_URL, DEFAULT_TIMEOUT_MS } from '@/config/env'
+import type { TokenResponse } from '@/types/api'
 
-import { ApiError, normalizeazaEroare } from './errors'
+import { ApiError, normalizeError } from './errors'
 import { tokenStore } from './tokenStore'
 
-/** Config de cerere marcat, ca să nu reîncercăm la nesfârșit aceeași cerere. */
-interface ConfigCuReincercare extends InternalAxiosRequestConfig {
-  _reincercatDupaRefresh?: boolean
+/** Flagged request config, so we don't retry the same request forever. */
+interface RetryableConfig extends InternalAxiosRequestConfig {
+  _retriedAfterRefresh?: boolean
 }
 
-/** Clientul folosit de tot restul aplicației. */
+/** The client used by the rest of the app. */
 export const apiClient = axios.create({
   baseURL: API_URL,
-  timeout: TIMEOUT_IMPLICIT_MS,
+  timeout: DEFAULT_TIMEOUT_MS,
   headers: { 'Content-Type': 'application/json' },
 })
 
 /**
- * Client fără interceptors, folosit **exclusiv** pentru `/auth/refresh`.
- * Dacă refresh-ul ar trece prin `apiClient`, un 401 la refresh ar declanșa
- * un nou refresh, la infinit.
+ * Client without interceptors, used **exclusively** for `/auth/refresh`.
+ * If the refresh went through `apiClient`, a 401 on refresh would trigger
+ * a new refresh, forever.
  */
-const clientBrut = axios.create({
+const rawClient = axios.create({
   baseURL: API_URL,
-  timeout: TIMEOUT_IMPLICIT_MS,
+  timeout: DEFAULT_TIMEOUT_MS,
   headers: { 'Content-Type': 'application/json' },
 })
 
-/** Rute care nu trebuie să declanșeze niciodată un refresh la 401. */
-const RUTE_FARA_REFRESH = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout']
+/** Routes that must never trigger a refresh on 401. */
+const ROUTES_WITHOUT_REFRESH = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout']
 
-/** Promisiunea de refresh în curs; `null` când nu se reînnoiește nimic. */
-let promisiuneRefresh: Promise<string> | null = null
+/** The refresh promise in flight; `null` when nothing is being renewed. */
+let refreshPromise: Promise<string> | null = null
 
-/** Callback prin care stratul de stare află că sesiunea a murit definitiv. */
-let laSesiuneExpirata: (() => void) | null = null
+/** Callback used by the state layer to learn that the session has died for good. */
+let onSessionExpired: (() => void) | null = null
 
 /**
- * Înregistrează handlerul apelat când sesiunea nu mai poate fi reînnoită.
+ * Registers the handler called when the session can no longer be renewed.
  *
  * Args:
- *   handler: Funcție fără argumente — de obicei golirea `authStore`.
+ *   handler: Argument-less function — usually clearing `authStore`.
  */
-export function seteazaHandlerSesiuneExpirata(handler: () => void): void {
-  laSesiuneExpirata = handler
+export function setSessionExpiredHandler(handler: () => void): void {
+  onSessionExpired = handler
 }
 
 /**
- * Execută efectiv reînnoirea sesiunii.
+ * Actually performs the session renewal.
  *
  * Returns:
- *   Noul token de acces.
+ *   The new access token.
  *
  * Raises:
- *   ApiError: Dacă nu există refresh token sau backendul îl respinge. În
- *     ambele cazuri sesiunea locală e ștearsă și handlerul de expirare apelat.
+ *   ApiError: If there's no refresh token or the backend rejects it. In
+ *     both cases the local session is cleared and the expiry handler is called.
  */
-async function executaRefresh(): Promise<string> {
+async function performRefresh(): Promise<string> {
   const refreshToken = await tokenStore.getRefreshToken()
 
   if (!refreshToken) {
-    await tokenStore.sterge()
-    laSesiuneExpirata?.()
-    throw new ApiError('Sesiunea a expirat. Autentifică-te din nou.', 401)
+    await tokenStore.clear()
+    onSessionExpired?.()
+    throw new ApiError('Your session has expired. Please log in again.', 401)
   }
 
   try {
-    const { data } = await clientBrut.post<RaspunsTokenuri>('/auth/refresh', {
+    const { data } = await rawClient.post<TokenResponse>('/auth/refresh', {
       refresh_token: refreshToken,
     })
-    await tokenStore.salveaza(data)
+    await tokenStore.save(data)
     return data.access_token
-  } catch (eroare) {
-    await tokenStore.sterge()
-    laSesiuneExpirata?.()
-    throw normalizeazaEroare(eroare)
+  } catch (error) {
+    await tokenStore.clear()
+    onSessionExpired?.()
+    throw normalizeError(error)
   }
 }
 
 /**
- * Reînnoiește sesiunea, garantând o singură cerere de refresh în zbor.
+ * Renews the session, guaranteeing a single refresh request in flight.
  *
  * Returns:
- *   Tokenul de acces proaspăt, partajat de toți apelanții concurenți.
+ *   The fresh access token, shared by all concurrent callers.
  */
-function reinnoiesteSesiunea(): Promise<string> {
-  promisiuneRefresh ??= executaRefresh().finally(() => {
-    promisiuneRefresh = null
+function renewSession(): Promise<string> {
+  refreshPromise ??= performRefresh().finally(() => {
+    refreshPromise = null
   })
 
-  return promisiuneRefresh
+  return refreshPromise
 }
 
 apiClient.interceptors.request.use(async (config) => {
@@ -121,25 +122,25 @@ apiClient.interceptors.request.use(async (config) => {
 })
 
 apiClient.interceptors.response.use(
-  (raspuns) => raspuns,
-  async (eroare: AxiosError) => {
-    const config = eroare.config as ConfigCuReincercare | undefined
-    const esteRutaDeAuth = RUTE_FARA_REFRESH.some((ruta) => config?.url?.startsWith(ruta) ?? false)
+  (response) => response,
+  async (error: AxiosError) => {
+    const config = error.config as RetryableConfig | undefined
+    const isAuthRoute = ROUTES_WITHOUT_REFRESH.some((route) => config?.url?.startsWith(route) ?? false)
 
-    const nuPutemReincerca =
-      eroare.response?.status !== 401 ||
+    const cannotRetry =
+      error.response?.status !== 401 ||
       !config ||
-      config._reincercatDupaRefresh === true ||
-      esteRutaDeAuth
+      config._retriedAfterRefresh === true ||
+      isAuthRoute
 
-    if (nuPutemReincerca) {
-      throw normalizeazaEroare(eroare)
+    if (cannotRetry) {
+      throw normalizeError(error)
     }
 
-    config._reincercatDupaRefresh = true
+    config._retriedAfterRefresh = true
 
-    const tokenNou = await reinnoiesteSesiunea()
-    config.headers.Authorization = `Bearer ${tokenNou}`
+    const newToken = await renewSession()
+    config.headers.Authorization = `Bearer ${newToken}`
 
     return apiClient.request(config)
   }

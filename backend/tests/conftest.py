@@ -1,4 +1,4 @@
-"""Fixtures pytest comune tuturor testelor backend-ului Glance."""
+"""Common pytest fixtures for all Glance backend tests."""
 
 from collections.abc import AsyncIterator
 
@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.session import Base, get_db, get_session_factory
 from app.main import app
-from app.models import (  # noqa: F401  (înregistrează modelele pe Base.metadata)
+from app.models import (  # noqa: F401  (registers the models on Base.metadata)
     Job,
     RefreshToken,
     User,
@@ -18,11 +18,11 @@ from app.models import (  # noqa: F401  (înregistrează modelele pe Base.metada
 
 @pytest.fixture
 async def db_session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    """Motor SQLite în memorie, izolat per test, cu toate tabelele create.
+    """In-memory SQLite engine, isolated per test, with all tables created.
 
     Yields:
-        Un `async_sessionmaker` legat de o bază de date curată, unică pentru
-        testul curent.
+        An `async_sessionmaker` bound to a clean database, unique to the
+        current test.
     """
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
@@ -43,10 +43,10 @@ async def db_session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]
 async def client(
     db_session_factory: async_sessionmaker[AsyncSession],
 ) -> AsyncIterator[AsyncClient]:
-    """Client HTTP async legat de aplicație, cu baza de date suprascrisă pe una de test.
+    """Async HTTP client bound to the app, with the database overridden to a test one.
 
     Yields:
-        Un `AsyncClient` httpx configurat cu transportul ASGI al aplicației.
+        An `AsyncClient` httpx configured with the application's ASGI transport.
     """
 
     async def _override_get_db() -> AsyncIterator[AsyncSession]:

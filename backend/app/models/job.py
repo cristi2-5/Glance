@@ -1,4 +1,4 @@
-"""Modelul `Job` — urmărește starea unei operațiuni asincrone (ex: analiza unei coperte)."""
+"""The `Job` model — tracks the state of an asynchronous operation (e.g. cover analysis)."""
 
 import enum
 from datetime import datetime
@@ -11,7 +11,7 @@ from app.db.session import Base
 
 
 class JobStatus(enum.StrEnum):
-    """Stările posibile ale unui job asincron."""
+    """The possible states of an asynchronous job."""
 
     PENDING = "pending"
     RUNNING = "running"
@@ -20,16 +20,16 @@ class JobStatus(enum.StrEnum):
 
 
 class Job(Base):
-    """Reprezintă o operațiune asincronă de lungă durată (ex: analiza unei coperte).
+    """Represents a long-running asynchronous operation (e.g. cover analysis).
 
     Attributes:
-        id: Identificator unic.
-        user_id: Utilizatorul proprietar al job-ului — doar el îl poate citi.
-        status: Starea curentă (`pending` → `running` → `done`/`failed`).
-        result: Rezultatul job-ului, ca JSON, disponibil când `status == done`.
-        error: Mesajul de eroare, disponibil când `status == failed`.
-        created_at: Momentul creării.
-        updated_at: Momentul ultimei schimbări de stare.
+        id: Unique identifier.
+        user_id: The user who owns the job — only they can read it.
+        status: The current state (`pending` → `running` → `done`/`failed`).
+        result: The job result, as JSON, available when `status == done`.
+        error: The error message, available when `status == failed`.
+        created_at: The moment the job was created.
+        updated_at: The moment of the last state change.
     """
 
     __tablename__ = "jobs"

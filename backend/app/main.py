@@ -1,4 +1,4 @@
-"""Punctul de intrare al aplicației FastAPI Glance."""
+"""Entry point of the Glance FastAPI application."""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,15 +18,15 @@ configure_logging(debug=settings.debug)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Creează tabelele bazei de date la pornirea aplicației."""
+    """Creates the database tables at application startup."""
     await init_db()
     yield
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
-# Necesar doar pentru clienți care rulează într-un browser (Expo Web, pagina
-# de test din `/dev`). Aplicația nativă din Expo Go nu trece prin CORS.
+# Only needed for clients running in a browser (Expo Web, the test page in
+# `/dev`). The native Expo Go app does not go through CORS.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -44,9 +44,9 @@ app.include_router(jobs.router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    """Verifică dacă serviciul rulează.
+    """Checks whether the service is running.
 
     Returns:
-        Un dicționar cu statusul aplicației și numele ei.
+        A dictionary with the application's status and its name.
     """
     return {"status": "ok", "app": settings.app_name}

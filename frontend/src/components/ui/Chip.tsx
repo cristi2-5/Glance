@@ -1,26 +1,26 @@
-/** Etichetă compactă: genuri, categorii, marcaje de stare. */
+/** Compact label: genres, categories, status tags. */
 
 import { StyleSheet, Text, View } from 'react-native'
 
 import { colors, radius, spacing, typography } from '@/theme'
 
-export type ChipTon = 'neutru' | 'accent' | 'avertisment'
+export type ChipTone = 'neutral' | 'accent' | 'warning'
 
 interface ChipProps {
-  eticheta: string
-  ton?: ChipTon
+  label: string
+  tone?: ChipTone
 }
 
-export function Chip({ eticheta, ton = 'neutru' }: ChipProps) {
+export function Chip({ label, tone = 'neutral' }: ChipProps) {
   return (
-    <View style={[styles.baza, stylesFundal[ton]]}>
-      <Text style={[styles.text, stylesText[ton]]}>{eticheta}</Text>
+    <View style={[styles.base, backgroundStyles[tone]]}>
+      <Text style={[styles.text, textStyles[tone]]}>{label}</Text>
     </View>
   )
 }
 
 const styles = StyleSheet.create({
-  baza: {
+  base: {
     paddingHorizontal: spacing.md,
     paddingVertical: 6,
     borderRadius: radius.pill,
@@ -32,14 +32,14 @@ const styles = StyleSheet.create({
   },
 })
 
-const stylesFundal = StyleSheet.create({
-  neutru: { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
+const backgroundStyles = StyleSheet.create({
+  neutral: { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
   accent: { backgroundColor: colors.accentSoft, borderColor: colors.accentSoft },
-  avertisment: { backgroundColor: colors.dangerSoft, borderColor: colors.danger },
+  warning: { backgroundColor: colors.dangerSoft, borderColor: colors.danger },
 })
 
-const stylesText = StyleSheet.create({
-  neutru: { color: colors.inkMuted },
+const textStyles = StyleSheet.create({
+  neutral: { color: colors.inkMuted },
   accent: { color: colors.accent },
-  avertisment: { color: colors.danger },
+  warning: { color: colors.danger },
 })

@@ -1,60 +1,60 @@
 /**
- * Apeluri pentru fluxul de autentificare.
+ * Calls for the authentication flow.
  *
- * Atenție la două particularități ale backendului, verificate în schema
- * OpenAPI:
- *   - `/auth/login` primește **JSON** `{email, password}`, nu form-data
- *     OAuth2, în ciuda schemei de securitate `OAuth2PasswordBearer`;
- *   - `/auth/register` întoarce `UserPublic`, **nu** tokenuri — după
- *     înregistrare e nevoie de un login explicit.
+ * Watch out for two backend quirks, verified against the OpenAPI schema:
+ *   - `/auth/login` accepts **JSON** `{email, password}`, not OAuth2
+ *     form-data, despite the `OAuth2PasswordBearer` security scheme;
+ *   - `/auth/register` returns `UserPublic`, **not** tokens — after
+ *     registering, an explicit login is required.
  */
 
 import { apiClient } from '@/api/client'
-import type { CredentialeRequest, RaspunsTokenuri, UtilizatorPublic } from '@/types/api'
+import type { CredentialsRequest, TokenResponse, UserPublic } from '@/types/api'
 
 /**
- * Creează un cont nou.
+ * Creates a new account.
  *
  * Args:
- *   credentiale: Email și parolă (minim 8 caractere).
+ *   credentials: Email and password (minimum 8 characters).
  *
  * Returns:
- *   Utilizatorul creat. Nu conține tokenuri — vezi nota din antetul modulului.
+ *   The created user. Contains no tokens — see the note in the module header.
  *
  * Raises:
- *   ApiError: 422 dacă emailul e deja folosit sau parola e prea scurtă.
+ *   ApiError: 422 if the email is already in use or the password is too short.
  */
-export async function inregistreaza(credentiale: CredentialeRequest): Promise<UtilizatorPublic> {
-  const { data } = await apiClient.post<UtilizatorPublic>('/auth/register', credentiale)
+export async function register(credentials: CredentialsRequest): Promise<UserPublic> {
+  const { data } = await apiClient.post<UserPublic>('/auth/register', credentials)
   return data
 }
 
 /**
- * Autentifică un utilizator existent.
+ * Logs in an existing user.
  *
  * Args:
- *   credentiale: Email și parolă.
+ *   credentials: Email and password.
  *
  * Returns:
- *   Perechea de tokenuri (acces + refresh).
+ *   The token pair (access + refresh).
  *
  * Raises:
- *   ApiError: 401 la credențiale greșite sau cont inactiv.
+ *   ApiError: 401 on wrong credentials or an inactive account.
  */
-export async function autentifica(credentiale: CredentialeRequest): Promise<RaspunsTokenuri> {
-  const { data } = await apiClient.post<RaspunsTokenuri>('/auth/login', credentiale)
+export async function login(credentials: CredentialsRequest): Promise<TokenResponse> {
+  const { data } = await apiClient.post<TokenResponse>('/auth/login', credentials)
   return data
 }
 
 /**
- * Revocă refresh tokenul pe server.
+ * Revokes the refresh token on the server.
  *
- * Backendul răspunde 204 și e idempotent: un token inexistent sau deja
- * revocat nu produce eroare, deci apelul e sigur de făcut „orbește".
+ * The backend responds 204 and is idempotent: a nonexistent or
+ * already-revoked token doesn't produce an error, so the call is safe to
+ * make "blindly".
  *
  * Args:
- *   refreshToken: Tokenul de revocat.
+ *   refreshToken: The token to revoke.
  */
-export async function deconecteaza(refreshToken: string): Promise<void> {
+export async function logout(refreshToken: string): Promise<void> {
   await apiClient.post('/auth/logout', { refresh_token: refreshToken })
 }

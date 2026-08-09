@@ -1,10 +1,10 @@
 /**
- * Captura coperții.
+ * Cover capture.
  *
- * API-ul folosit e cel din SDK 57: componenta `CameraView` cu hook-ul
- * `useCameraPermissions`. După captură, imaginea e redimensionată local
- * (vezi `useAnalizaCoperta`) și trimisă spre backend, iar utilizatorul e
- * mutat pe ecranul de rezultat cu id-ul job-ului primit.
+ * Uses the SDK 57 API: the `CameraView` component with the
+ * `useCameraPermissions` hook. After capture, the image is resized locally
+ * (see `useAnalyzeCover`) and sent to the backend, and the user is moved to
+ * the result screen with the id of the received job.
  */
 
 import { Feather } from '@expo/vector-icons'
@@ -15,125 +15,125 @@ import { useRef, useState } from 'react'
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { normalizeazaEroare } from '@/api/errors'
-import { BannerEroare } from '@/components/ui/BannerEroare'
+import { normalizeError } from '@/api/errors'
+import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
 import { Screen } from '@/components/ui/Screen'
-import { useAnalizaCoperta } from '@/features/scan/hooks'
+import { useAnalyzeCover } from '@/features/scan/hooks'
 import { colors, radius, spacing, typography } from '@/theme'
 
 export default function CameraScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
   const cameraRef = useRef<CameraView>(null)
-  const [permisiune, cerePermisiune] = useCameraPermissions()
-  const [eroare, setEroare] = useState<string | null>(null)
-  const [captureaza, setCaptureaza] = useState(false)
+  const [permission, requestPermission] = useCameraPermissions()
+  const [error, setError] = useState<string | null>(null)
+  const [capturing, setCapturing] = useState(false)
 
-  const analiza = useAnalizaCoperta()
-  const ocupat = captureaza || analiza.isPending
+  const analysis = useAnalyzeCover()
+  const busy = capturing || analysis.isPending
 
-  async function fotografiaza() {
-    if (!cameraRef.current || ocupat) {
+  async function takePhoto() {
+    if (!cameraRef.current || busy) {
       return
     }
 
-    setEroare(null)
-    setCaptureaza(true)
+    setError(null)
+    setCapturing(true)
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy)
 
     try {
-      const foto = await cameraRef.current.takePictureAsync({ quality: 1, exif: false })
+      const photo = await cameraRef.current.takePictureAsync({ quality: 1, exif: false })
 
-      if (!foto) {
-        setEroare('Nu am putut face fotografia. Încearcă din nou.')
+      if (!photo) {
+        setError('Could not take the photo. Try again.')
         return
       }
 
-      const job = await analiza.mutateAsync({ uri: foto.uri, latime: foto.width })
+      const job = await analysis.mutateAsync({ uri: photo.uri, width: photo.width })
       router.replace(`/scan/${job.job_id}`)
-    } catch (problema) {
-      setEroare(normalizeazaEroare(problema).message)
+    } catch (problem) {
+      setError(normalizeError(problem).message)
     } finally {
-      setCaptureaza(false)
+      setCapturing(false)
     }
   }
 
-  if (!permisiune) {
+  if (!permission) {
     return (
       <Screen>
-        <View style={styles.centrat}>
+        <View style={styles.centered}>
           <ActivityIndicator color={colors.accent} />
         </View>
       </Screen>
     )
   }
 
-  if (!permisiune.granted) {
+  if (!permission.granted) {
     return (
-      <Screen contentStyle={styles.centrat}>
+      <Screen contentStyle={styles.centered}>
         <Feather color={colors.inkFaint} name="camera-off" size={40} />
-        <Text style={styles.titluPermisiune}>Am nevoie de cameră</Text>
-        <Text style={styles.textPermisiune}>
-          Glance folosește camera doar ca să fotografieze coperta. Imaginea nu părăsește rețeaua ta
-          locală.
+        <Text style={styles.permissionTitle}>I need the camera</Text>
+        <Text style={styles.permissionText}>
+          Glance only uses the camera to photograph the cover. The image never leaves your local
+          network.
         </Text>
         <Button
-          label="Permite accesul"
+          label="Allow access"
           onPress={() => {
-            void cerePermisiune()
+            void requestPermission()
           }}
-          style={styles.butonPermisiune}
+          style={styles.permissionButton}
         />
-        <Button label="Înapoi" onPress={() => router.back()} variant="ghost" />
+        <Button label="Back" onPress={() => router.back()} variant="ghost" />
       </Screen>
     )
   }
 
   return (
-    <View style={styles.radacina}>
+    <View style={styles.root}>
       <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} />
 
-      <View style={[styles.bara, { paddingTop: insets.top + spacing.md }]}>
+      <View style={[styles.bar, { paddingTop: insets.top + spacing.md }]}>
         <Pressable
-          accessibilityLabel="Închide camera"
+          accessibilityLabel="Close camera"
           accessibilityRole="button"
           hitSlop={12}
           onPress={() => router.back()}
-          style={styles.butonInchide}
+          style={styles.closeButton}
         >
           <Feather color={colors.inkInverse} name="x" size={22} />
         </Pressable>
       </View>
 
-      <View style={styles.ghidaj} pointerEvents="none">
-        <View style={styles.chenar} />
-        <Text style={styles.textGhidaj}>Încadrează coperta în chenar</Text>
+      <View style={styles.guide} pointerEvents="none">
+        <View style={styles.frame} />
+        <Text style={styles.guideText}>Frame the cover inside the box</Text>
       </View>
 
-      <View style={[styles.zonaDeclansator, { paddingBottom: insets.bottom + spacing.xl }]}>
-        {eroare ? <BannerEroare mesaj={eroare} /> : null}
+      <View style={[styles.shutterZone, { paddingBottom: insets.bottom + spacing.xl }]}>
+        {error ? <ErrorBanner message={error} /> : null}
 
-        {analiza.isPending ? <Text style={styles.textStare}>Trimit imaginea…</Text> : null}
+        {analysis.isPending ? <Text style={styles.statusText}>Sending the image…</Text> : null}
 
         <Pressable
-          accessibilityLabel="Fotografiază coperta"
+          accessibilityLabel="Photograph the cover"
           accessibilityRole="button"
-          accessibilityState={{ disabled: ocupat, busy: ocupat }}
-          disabled={ocupat}
+          accessibilityState={{ disabled: busy, busy }}
+          disabled={busy}
           onPress={() => {
-            void fotografiaza()
+            void takePhoto()
           }}
           style={({ pressed }) => [
-            styles.declansator,
-            pressed && !ocupat ? styles.declansatorApasat : null,
-            ocupat ? styles.declansatorInactiv : null,
+            styles.shutter,
+            pressed && !busy ? styles.shutterPressed : null,
+            busy ? styles.shutterInactive : null,
           ]}
         >
-          {ocupat ? (
+          {busy ? (
             <ActivityIndicator color={colors.accent} />
           ) : (
-            <View style={styles.miezDeclansator} />
+            <View style={styles.shutterCore} />
           )}
         </Pressable>
       </View>
@@ -142,31 +142,31 @@ export default function CameraScreen() {
 }
 
 const styles = StyleSheet.create({
-  radacina: {
+  root: {
     flex: 1,
     backgroundColor: colors.cameraBackdrop,
   },
-  centrat: {
+  centered: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.md,
   },
-  titluPermisiune: {
+  permissionTitle: {
     ...typography.displaySmall,
     color: colors.ink,
     textAlign: 'center',
   },
-  textPermisiune: {
+  permissionText: {
     ...typography.body,
     color: colors.inkMuted,
     textAlign: 'center',
   },
-  butonPermisiune: {
+  permissionButton: {
     alignSelf: 'stretch',
     marginTop: spacing.md,
   },
-  bara: {
+  bar: {
     position: 'absolute',
     top: 0,
     left: 0,
@@ -174,7 +174,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     zIndex: 2,
   },
-  butonInchide: {
+  closeButton: {
     width: 40,
     height: 40,
     borderRadius: radius.pill,
@@ -182,7 +182,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  ghidaj: {
+  guide: {
     position: 'absolute',
     top: 0,
     left: 0,
@@ -192,14 +192,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.lg,
   },
-  chenar: {
+  frame: {
     width: '72%',
     aspectRatio: 0.66,
     borderWidth: 2,
     borderColor: 'rgba(255, 253, 249, 0.85)',
     borderRadius: radius.md,
   },
-  textGhidaj: {
+  guideText: {
     ...typography.caption,
     color: colors.inkInverse,
     backgroundColor: colors.overlay,
@@ -208,7 +208,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     overflow: 'hidden',
   },
-  zonaDeclansator: {
+  shutterZone: {
     position: 'absolute',
     bottom: 0,
     left: 0,
@@ -217,11 +217,11 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingHorizontal: spacing.xl,
   },
-  textStare: {
+  statusText: {
     ...typography.caption,
     color: colors.inkInverse,
   },
-  declansator: {
+  shutter: {
     width: 76,
     height: 76,
     borderRadius: radius.pill,
@@ -230,13 +230,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  declansatorApasat: {
+  shutterPressed: {
     transform: [{ scale: 0.94 }],
   },
-  declansatorInactiv: {
+  shutterInactive: {
     opacity: 0.6,
   },
-  miezDeclansator: {
+  shutterCore: {
     width: 58,
     height: 58,
     borderRadius: radius.pill,

@@ -1,4 +1,4 @@
-"""Modelul `RefreshToken` — token opac, stocat hash-uit, pentru reînnoirea sesiunii."""
+"""The `RefreshToken` model — opaque token, stored hashed, for session renewal."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -13,20 +13,20 @@ if TYPE_CHECKING:
 
 
 class RefreshToken(Base):
-    """Reprezintă un refresh token emis unui utilizator.
+    """Represents a refresh token issued to a user.
 
-    Tokenul brut nu se stochează niciodată — doar hash-ul SHA-256 al lui,
-    astfel încât o citire a bazei de date să nu expună token-uri valide.
-    Rotation: la fiecare `/auth/refresh` reușit, tokenul vechi e marcat
-    `revoked` și se emite unul nou.
+    The raw token is never stored — only its SHA-256 hash, so that a
+    database read never exposes valid tokens. Rotation: on every successful
+    `/auth/refresh`, the old token is marked `revoked` and a new one is
+    issued.
 
     Attributes:
-        id: Identificator unic.
-        token_hash: Hash-ul SHA-256 (hex) al tokenului brut.
-        user_id: Utilizatorul căruia îi aparține tokenul.
-        expires_at: Momentul (UTC) după care tokenul nu mai e valid.
-        revoked: Dacă tokenul a fost invalidat explicit (refresh sau logout).
-        created_at: Momentul emiterii (UTC).
+        id: Unique identifier.
+        token_hash: The SHA-256 (hex) hash of the raw token.
+        user_id: The user this token belongs to.
+        expires_at: The moment (UTC) after which the token is no longer valid.
+        revoked: Whether the token has been explicitly invalidated (refresh or logout).
+        created_at: The moment of issuance (UTC).
     """
 
     __tablename__ = "refresh_tokens"

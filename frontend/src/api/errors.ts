@@ -1,113 +1,114 @@
 /**
- * Normalizarea erorilor venite de la backend.
+ * Normalization of errors coming from the backend.
  *
- * Backendul răspunde cu **două forme diferite** de `detail`:
- *   - excepțiile de domeniu (`GlanceError`) → `{"detail": "mesaj"}` — string;
- *   - erorile de validare Pydantic (422)    → `{"detail": [{loc, msg, type}]}` — array.
+ * The backend responds with **two different shapes** for `detail`:
+ *   - domain exceptions (`GlanceError`) → `{"detail": "message"}` — string;
+ *   - Pydantic validation errors (422)  → `{"detail": [{loc, msg, type}]}` — array.
  *
- * Fără stratul ăsta, afișarea directă a lui `detail` produce „[object Object]"
- * pe ecran. Tot aici traducem erorile de rețea în mesaje utile.
+ * Without this layer, displaying `detail` directly produces "[object Object]"
+ * on screen. This is also where we translate network errors into useful
+ * messages.
  */
 
 import axios from 'axios'
 
-/** Un element din răspunsul de validare FastAPI. */
-interface DetaliuValidare {
+/** An item from FastAPI's validation response. */
+interface ValidationDetail {
   loc: (string | number)[]
   msg: string
   type: string
 }
 
 /**
- * Eroare uniformă de API, cu mesaj gata de afișat și erori pe câmpuri.
+ * A uniform API error, with a display-ready message and per-field errors.
  */
 export class ApiError extends Error {
-  /** Codul HTTP; `0` pentru erori de rețea sau timeout. */
+  /** The HTTP status code; `0` for network errors or timeouts. */
   readonly status: number
-  /** Mesaj pe câmp de formular, cheia fiind numele câmpului (`email`, `password`). */
-  readonly eroriCampuri: Record<string, string>
+  /** Message per form field, keyed by field name (`email`, `password`). */
+  readonly fieldErrors: Record<string, string>
 
-  constructor(message: string, status: number, eroriCampuri: Record<string, string> = {}) {
+  constructor(message: string, status: number, fieldErrors: Record<string, string> = {}) {
     super(message)
     this.name = 'ApiError'
     this.status = status
-    this.eroriCampuri = eroriCampuri
+    this.fieldErrors = fieldErrors
   }
 
-  /** `true` dacă cererea nu a ajuns la server (offline, IP greșit, backend oprit). */
-  get esteEroareDeRetea(): boolean {
+  /** `true` if the request never reached the server (offline, wrong IP, backend down). */
+  get isNetworkError(): boolean {
     return this.status === 0
   }
 
-  /** `true` dacă sesiunea nu mai e validă și utilizatorul trebuie să se autentifice din nou. */
-  get esteNeautentificat(): boolean {
+  /** `true` if the session is no longer valid and the user needs to log in again. */
+  get isUnauthenticated(): boolean {
     return this.status === 401
   }
 }
 
 /**
- * Transformă lista de erori de validare FastAPI într-un dicționar pe câmpuri.
+ * Turns FastAPI's list of validation errors into a per-field dictionary.
  *
- * `loc` arată de obicei ca `["body", "email"]`, deci luăm ultimul element
- * ca nume de câmp.
+ * `loc` usually looks like `["body", "email"]`, so we take the last element
+ * as the field name.
  */
-function extrageEroriCampuri(detalii: DetaliuValidare[]): Record<string, string> {
-  const rezultat: Record<string, string> = {}
+function extractFieldErrors(details: ValidationDetail[]): Record<string, string> {
+  const result: Record<string, string> = {}
 
-  for (const detaliu of detalii) {
-    const camp = detaliu.loc[detaliu.loc.length - 1]
-    if (typeof camp === 'string' && camp !== 'body') {
-      rezultat[camp] = detaliu.msg
+  for (const detail of details) {
+    const field = detail.loc[detail.loc.length - 1]
+    if (typeof field === 'string' && field !== 'body') {
+      result[field] = detail.msg
     }
   }
 
-  return rezultat
+  return result
 }
 
 /**
- * Construiește un mesaj scurt, lizibil, dintr-o listă de erori de validare.
+ * Builds a short, readable message from a list of validation errors.
  */
-function rezumaEroriValidare(detalii: DetaliuValidare[]): string {
-  const primul = detalii[0]
-  if (!primul) {
-    return 'Datele trimise nu sunt valide.'
+function summarizeValidationErrors(details: ValidationDetail[]): string {
+  const first = details[0]
+  if (!first) {
+    return 'The submitted data is not valid.'
   }
 
-  const camp = primul.loc[primul.loc.length - 1]
-  return typeof camp === 'string' && camp !== 'body' ? `${camp}: ${primul.msg}` : primul.msg
+  const field = first.loc[first.loc.length - 1]
+  return typeof field === 'string' && field !== 'body' ? `${field}: ${first.msg}` : first.msg
 }
 
 /**
- * Convertește orice eroare aruncată de axios într-un `ApiError`.
+ * Converts any error thrown by axios into an `ApiError`.
  *
  * Args:
- *   eroare: Valoarea prinsă în `catch` — poate fi orice.
+ *   error: The value caught in `catch` — can be anything.
  *
  * Returns:
- *   Un `ApiError` cu mesaj în română, potrivit pentru afișare directă.
+ *   An `ApiError` with a message ready to display directly.
  */
-export function normalizeazaEroare(eroare: unknown): ApiError {
-  if (eroare instanceof ApiError) {
-    return eroare
+export function normalizeError(error: unknown): ApiError {
+  if (error instanceof ApiError) {
+    return error
   }
 
-  if (!axios.isAxiosError(eroare)) {
-    const mesaj = eroare instanceof Error ? eroare.message : 'A apărut o eroare neașteptată.'
-    return new ApiError(mesaj, 0)
+  if (!axios.isAxiosError(error)) {
+    const message = error instanceof Error ? error.message : 'An unexpected error occurred.'
+    return new ApiError(message, 0)
   }
 
-  if (eroare.code === 'ECONNABORTED') {
-    return new ApiError('Serverul nu a răspuns la timp. Încearcă din nou.', 0)
+  if (error.code === 'ECONNABORTED') {
+    return new ApiError('The server did not respond in time. Try again.', 0)
   }
 
-  if (!eroare.response) {
+  if (!error.response) {
     return new ApiError(
-      'Nu mă pot conecta la server. Verifică dacă backendul rulează și dacă telefonul e pe aceeași rețea Wi-Fi.',
+      "Can't connect to the server. Check that the backend is running and that the phone is on the same Wi-Fi network.",
       0
     )
   }
 
-  const { status, data } = eroare.response
+  const { status, data } = error.response
   const detail: unknown = (data as { detail?: unknown } | undefined)?.detail
 
   if (typeof detail === 'string') {
@@ -115,29 +116,29 @@ export function normalizeazaEroare(eroare: unknown): ApiError {
   }
 
   if (Array.isArray(detail)) {
-    const detalii = detail as DetaliuValidare[]
-    return new ApiError(rezumaEroriValidare(detalii), status, extrageEroriCampuri(detalii))
+    const details = detail as ValidationDetail[]
+    return new ApiError(summarizeValidationErrors(details), status, extractFieldErrors(details))
   }
 
-  return new ApiError(mesajImplicitPentruStatus(status), status)
+  return new ApiError(defaultMessageForStatus(status), status)
 }
 
-/** Mesaj de rezervă când backendul nu trimite un `detail` interpretabil. */
-function mesajImplicitPentruStatus(status: number): string {
+/** Fallback message when the backend doesn't send an interpretable `detail`. */
+function defaultMessageForStatus(status: number): string {
   switch (status) {
     case 401:
-      return 'Sesiunea a expirat. Autentifică-te din nou.'
+      return 'Your session has expired. Please log in again.'
     case 403:
-      return 'Nu ai acces la această resursă.'
+      return "You don't have access to this resource."
     case 404:
-      return 'Resursa cerută nu există.'
+      return 'The requested resource does not exist.'
     case 413:
-      return 'Imaginea este prea mare.'
+      return 'The image is too large.'
     case 415:
-      return 'Formatul imaginii nu este acceptat.'
+      return 'The image format is not supported.'
     case 503:
-      return 'Un serviciu necesar este momentan indisponibil.'
+      return 'A required service is currently unavailable.'
     default:
-      return `Eroare de server (${status}).`
+      return `Server error (${status}).`
   }
 }

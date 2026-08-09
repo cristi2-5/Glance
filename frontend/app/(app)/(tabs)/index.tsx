@@ -1,4 +1,4 @@
-/** Ecranul principal: punctul de plecare al unei scanări. */
+/** The home screen: the starting point of a scan. */
 
 import { Feather } from '@expo/vector-icons'
 import * as Haptics from 'expo-haptics'
@@ -11,56 +11,56 @@ import { colors, radius, shadow, spacing, typography } from '@/theme'
 
 export default function HomeScreen() {
   const router = useRouter()
-  const utilizator = useAuthStore((s) => s.utilizator)
+  const user = useAuthStore((s) => s.user)
 
-  const numeAfisat = utilizator?.email.split('@')[0] ?? 'cititorule'
+  const displayName = user?.email.split('@')[0] ?? 'reader'
 
-  function deschideCamera() {
+  function openCamera() {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     router.push('/scan/camera')
   }
 
   return (
     <Screen scrollable>
-      <View style={styles.antet}>
-        <Text style={styles.eyebrow}>Salut, {numeAfisat}</Text>
-        <Text style={styles.titlu}>Ce carte ai în mână?</Text>
+      <View style={styles.header}>
+        <Text style={styles.eyebrow}>Hi, {displayName}</Text>
+        <Text style={styles.title}>What book do you have in hand?</Text>
       </View>
 
       <Pressable
-        accessibilityHint="Deschide camera pentru a fotografia coperta unei cărți"
-        accessibilityLabel="Scanează o copertă"
+        accessibilityHint="Opens the camera to photograph a book cover"
+        accessibilityLabel="Scan a cover"
         accessibilityRole="button"
-        onPress={deschideCamera}
-        style={({ pressed }) => [styles.cardCaptura, pressed ? styles.cardApasat : null]}
+        onPress={openCamera}
+        style={({ pressed }) => [styles.captureCard, pressed ? styles.cardPressed : null]}
       >
-        <View style={styles.cercIcon}>
+        <View style={styles.iconCircle}>
           <Feather color={colors.inkInverse} name="camera" size={30} />
         </View>
-        <Text style={styles.titluCaptura}>Scanează o copertă</Text>
-        <Text style={styles.subtitluCaptura}>
-          Ține cartea dreaptă, cu titlul vizibil. Restul îl fac eu.
+        <Text style={styles.captureTitle}>Scan a cover</Text>
+        <Text style={styles.captureSubtitle}>
+          Hold the book straight, with the title visible. I'll take care of the rest.
         </Text>
       </Pressable>
 
-      <View style={styles.sectiune}>
-        <Text style={styles.titluSectiune}>Cum funcționează</Text>
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>How it works</Text>
 
-        <View style={styles.pasi}>
-          <Pas
-            descriere="Fotografiezi coperta. Textul e citit local, pe laptopul tău."
+        <View style={styles.steps}>
+          <Step
+            description="You photograph the cover. The text is read locally, on your laptop."
             index={1}
-            titlu="Recunoaștere"
+            title="Recognition"
           />
-          <Pas
-            descriere="Caut descrieri și opinii critice în surse deschise."
+          <Step
+            description="I look up descriptions and critical opinions from open sources."
             index={2}
-            titlu="Documentare"
+            title="Research"
           />
-          <Pas
-            descriere="Primești un rezumat cu trimitere la sursa fiecărei afirmații."
+          <Step
+            description="You get a summary with a reference to the source of each claim."
             index={3}
-            titlu="Sinteză"
+            title="Synthesis"
           />
         </View>
       </View>
@@ -68,28 +68,28 @@ export default function HomeScreen() {
   )
 }
 
-interface PasProps {
+interface StepProps {
   index: number
-  titlu: string
-  descriere: string
+  title: string
+  description: string
 }
 
-function Pas({ index, titlu, descriere }: PasProps) {
+function Step({ index, title, description }: StepProps) {
   return (
-    <View style={styles.pas}>
-      <View style={styles.numarPas}>
-        <Text style={styles.textNumarPas}>{index}</Text>
+    <View style={styles.step}>
+      <View style={styles.stepNumber}>
+        <Text style={styles.stepNumberText}>{index}</Text>
       </View>
-      <View style={styles.continutPas}>
-        <Text style={styles.titluPas}>{titlu}</Text>
-        <Text style={styles.descrierePas}>{descriere}</Text>
+      <View style={styles.stepContent}>
+        <Text style={styles.stepTitle}>{title}</Text>
+        <Text style={styles.stepDescription}>{description}</Text>
       </View>
     </View>
   )
 }
 
 const styles = StyleSheet.create({
-  antet: {
+  header: {
     gap: spacing.xs,
     marginBottom: spacing.xl,
   },
@@ -97,11 +97,11 @@ const styles = StyleSheet.create({
     ...typography.overline,
     color: colors.accent,
   },
-  titlu: {
+  title: {
     ...typography.displayLarge,
     color: colors.ink,
   },
-  cardCaptura: {
+  captureCard: {
     alignItems: 'center',
     gap: spacing.sm,
     paddingVertical: spacing.xxl,
@@ -112,10 +112,10 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     ...shadow.lifted,
   },
-  cardApasat: {
+  cardPressed: {
     backgroundColor: colors.surfaceMuted,
   },
-  cercIcon: {
+  iconCircle: {
     width: 72,
     height: 72,
     borderRadius: radius.pill,
@@ -124,33 +124,33 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: spacing.sm,
   },
-  titluCaptura: {
+  captureTitle: {
     ...typography.displaySmall,
     color: colors.ink,
   },
-  subtitluCaptura: {
+  captureSubtitle: {
     ...typography.caption,
     color: colors.inkMuted,
     textAlign: 'center',
     maxWidth: 260,
   },
-  sectiune: {
+  section: {
     marginTop: spacing.xxl,
     gap: spacing.lg,
   },
-  titluSectiune: {
+  sectionTitle: {
     ...typography.displaySmall,
     color: colors.ink,
   },
-  pasi: {
+  steps: {
     gap: spacing.lg,
   },
-  pas: {
+  step: {
     flexDirection: 'row',
     gap: spacing.md,
     alignItems: 'flex-start',
   },
-  numarPas: {
+  stepNumber: {
     width: 28,
     height: 28,
     borderRadius: radius.pill,
@@ -158,19 +158,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  textNumarPas: {
+  stepNumberText: {
     ...typography.label,
     color: colors.accent,
   },
-  continutPas: {
+  stepContent: {
     flex: 1,
     gap: 2,
   },
-  titluPas: {
+  stepTitle: {
     ...typography.titleCard,
     color: colors.ink,
   },
-  descrierePas: {
+  stepDescription: {
     ...typography.caption,
     color: colors.inkMuted,
   },

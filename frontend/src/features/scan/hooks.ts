@@ -1,45 +1,45 @@
-/** Hook-uri pentru fluxul de scanare a coperții. */
+/** Hooks for the cover scanning flow. */
 
 import { useMutation, useQuery } from '@tanstack/react-query'
 
-import { analizeazaCoperta } from '@/api/endpoints/books'
+import { analyzeCover } from '@/api/endpoints/books'
 import { getJob } from '@/api/endpoints/jobs'
-import { INTERVAL_POLLING_JOB_MS } from '@/config/env'
-import { pregatesteCopertaPentruUpload } from '@/lib/imagine'
-import type { JobCreat, JobPublic } from '@/types/api'
+import { JOB_POLLING_INTERVAL_MS } from '@/config/env'
+import { prepareCoverForUpload } from '@/lib/imagine'
+import type { JobCreated, JobPublic } from '@/types/api'
 
-/** Argumentele pentru pornirea unei analize. */
-interface ArgumenteAnaliza {
-  /** URI-ul local al fotografiei, direct din cameră. */
+/** Arguments for starting an analysis. */
+interface AnalysisArgs {
+  /** The local URI of the photo, straight from the camera. */
   uri: string
-  /** Lățimea originală, ca să evităm mărirea inutilă a unei imagini mici. */
-  latime?: number
+  /** The original width, to avoid needlessly enlarging a small image. */
+  width?: number
 }
 
 /**
- * Pregătește imaginea și pornește job-ul de analiză.
+ * Prepares the image and starts the analysis job.
  *
- * Redimensionarea se face aici, nu în ecran: e o preocupare de transport
- * (limita de 8 MB a backendului), nu de interfață.
+ * The resizing happens here, not on the screen: it's a transport concern
+ * (the backend's 8 MB limit), not a UI one.
  */
-export function useAnalizaCoperta() {
-  return useMutation<JobCreat, Error, ArgumenteAnaliza>({
-    async mutationFn({ uri, latime }) {
-      const pregatita = await pregatesteCopertaPentruUpload(uri, latime)
-      return analizeazaCoperta(pregatita.uri)
+export function useAnalyzeCover() {
+  return useMutation<JobCreated, Error, AnalysisArgs>({
+    async mutationFn({ uri, width }) {
+      const prepared = await prepareCoverForUpload(uri, width)
+      return analyzeCover(prepared.uri)
     },
   })
 }
 
 /**
- * Urmărește un job până se termină.
+ * Tracks a job until it finishes.
  *
- * Polling-ul se oprește singur când `status` devine `done` sau `failed` —
- * `refetchInterval` întoarce `false`, deci nu mai batem la ușa serverului
- * degeaba cât timp ecranul rămâne deschis.
+ * Polling stops on its own once `status` becomes `done` or `failed` —
+ * `refetchInterval` returns `false`, so we stop hitting the server for no
+ * reason while the screen stays open.
  *
  * Args:
- *   jobId: Id-ul job-ului, sau `null` cât timp nu există încă unul.
+ *   jobId: The job's id, or `null` while one doesn't exist yet.
  */
 export function useJob(jobId: number | null) {
   return useQuery<JobPublic>({
@@ -47,14 +47,14 @@ export function useJob(jobId: number | null) {
     enabled: jobId !== null,
     async queryFn() {
       if (jobId === null) {
-        throw new Error('useJob a fost apelat fără jobId.')
+        throw new Error('useJob was called without a jobId.')
       }
       return getJob(jobId)
     },
     refetchInterval(query) {
       const status = query.state.data?.status
-      const sAterminat = status === 'done' || status === 'failed'
-      return sAterminat ? false : INTERVAL_POLLING_JOB_MS
+      const isFinished = status === 'done' || status === 'failed'
+      return isFinished ? false : JOB_POLLING_INTERVAL_MS
     },
   })
 }

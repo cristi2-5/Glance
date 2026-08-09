@@ -1,10 +1,9 @@
 /**
- * Rezultatul unei scanări.
+ * The result of a scan.
  *
- * Face polling pe `GET /jobs/{id}` până când job-ul ajunge `done` sau
- * `failed`. Cât timp Modulele 3-5 nu sunt gata, backendul întoarce un
- * placeholder, iar ecranul afișează date demonstrative — marcate explicit,
- * niciodată strecurate ca reale.
+ * Polls `GET /jobs/{id}` until the job reaches `done` or `failed`. As long
+ * as Modules 3-5 aren't ready, the backend returns a placeholder and the
+ * screen shows demo data — explicitly marked, never slipped in as real.
  */
 
 import { Feather } from '@expo/vector-icons'
@@ -13,19 +12,19 @@ import { useMemo } from 'react'
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 
 import { ApiError } from '@/api/errors'
-import { RatingStele } from '@/components/book/RatingStele'
-import { BannerEroare } from '@/components/ui/BannerEroare'
+import { RatingStars } from '@/components/book/RatingStele'
+import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Chip } from '@/components/ui/Chip'
 import { Screen } from '@/components/ui/Screen'
 import { useJob } from '@/features/scan/hooks'
-import { interpreteazaRezultat } from '@/features/scan/mapper'
+import { interpretResult } from '@/features/scan/mapper'
 import { colors, radius, spacing, typography } from '@/theme'
-import type { RecenzieSursa } from '@/types/api'
+import type { SourceReview } from '@/types/api'
 
-/** Etichete lizibile pentru sursele de conținut. */
-const NUME_SURSA: Record<RecenzieSursa['sursa'], string> = {
+/** Readable labels for the content sources. */
+const SOURCE_NAME: Record<SourceReview['source'], string> = {
   wikipedia: 'Wikipedia',
   open_library: 'Open Library',
   google_books: 'Google Books',
@@ -35,67 +34,67 @@ export default function RezultatScanareScreen() {
   const router = useRouter()
   const { jobId } = useLocalSearchParams<{ jobId: string }>()
 
-  const idNumeric = Number.parseInt(jobId ?? '', 10)
-  const idValid = Number.isFinite(idNumeric)
+  const numericId = Number.parseInt(jobId ?? '', 10)
+  const isValidId = Number.isFinite(numericId)
 
-  const { data: job, error } = useJob(idValid ? idNumeric : null)
+  const { data: job, error } = useJob(isValidId ? numericId : null)
 
-  const interpretare = useMemo(
-    () => (job?.status === 'done' ? interpreteazaRezultat(job.result) : null),
+  const interpretation = useMemo(
+    () => (job?.status === 'done' ? interpretResult(job.result) : null),
     [job?.status, job?.result]
   )
 
-  if (!idValid) {
+  if (!isValidId) {
     return (
-      <Screen contentStyle={styles.centrat}>
-        <BannerEroare mesaj="Identificator de job invalid." />
-        <Button label="Înapoi" onPress={() => router.replace('/')} variant="secondary" />
+      <Screen contentStyle={styles.centered}>
+        <ErrorBanner message="Invalid job identifier." />
+        <Button label="Back" onPress={() => router.replace('/')} variant="secondary" />
       </Screen>
     )
   }
 
   if (error) {
-    const mesaj = error instanceof ApiError ? error.message : 'Nu am putut citi starea analizei.'
+    const message = error instanceof ApiError ? error.message : 'Could not read the analysis status.'
     return (
-      <Screen contentStyle={styles.centrat}>
-        <BannerEroare mesaj={mesaj} />
-        <Button label="Înapoi la Acasă" onPress={() => router.replace('/')} variant="secondary" />
+      <Screen contentStyle={styles.centered}>
+        <ErrorBanner message={message} />
+        <Button label="Back to Home" onPress={() => router.replace('/')} variant="secondary" />
       </Screen>
     )
   }
 
-  // Prima citire, înainte ca polling-ul să întoarcă ceva.
+  // The first read, before polling has returned anything.
   if (!job) {
-    return <StareInProgres status="pending" />
+    return <InProgressState status="pending" />
   }
 
   if (job.status === 'pending' || job.status === 'running') {
-    return <StareInProgres status={job.status} />
+    return <InProgressState status={job.status} />
   }
 
   if (job.status === 'failed') {
     return (
-      <Screen contentStyle={styles.centrat}>
+      <Screen contentStyle={styles.centered}>
         <Feather color={colors.danger} name="alert-triangle" size={40} />
-        <Text style={styles.titluStare}>Analiza a eșuat</Text>
-        <Text style={styles.textStare}>{job.error ?? 'Backendul nu a oferit un motiv.'}</Text>
-        <Button label="Încearcă din nou" onPress={() => router.replace('/scan/camera')} />
-        <Button label="Înapoi la Acasă" onPress={() => router.replace('/')} variant="ghost" />
+        <Text style={styles.stateTitle}>Analysis failed</Text>
+        <Text style={styles.stateText}>{job.error ?? 'The backend did not give a reason.'}</Text>
+        <Button label="Try again" onPress={() => router.replace('/scan/camera')} />
+        <Button label="Back to Home" onPress={() => router.replace('/')} variant="ghost" />
       </Screen>
     )
   }
 
-  if (!interpretare) {
-    return <StareInProgres status="running" />
+  if (!interpretation) {
+    return <InProgressState status="running" />
   }
 
-  const { analiza, esteDemonstrativ } = interpretare
+  const { analysis, isDemo } = interpretation
 
   return (
     <Screen scrollable>
-      <View style={styles.bara}>
+      <View style={styles.bar}>
         <Pressable
-          accessibilityLabel="Înapoi"
+          accessibilityLabel="Back"
           accessibilityRole="button"
           hitSlop={12}
           onPress={() => router.replace('/')}
@@ -104,121 +103,121 @@ export default function RezultatScanareScreen() {
         </Pressable>
       </View>
 
-      {esteDemonstrativ ? (
-        <View style={styles.avertismentDemo}>
+      {isDemo ? (
+        <View style={styles.demoWarning}>
           <Feather color={colors.accent} name="info" size={16} />
-          <Text style={styles.textDemo}>
-            Date demonstrative. Backendul a preluat imaginea, dar recunoașterea și sinteza sosesc cu
-            Modulele 3-5.
+          <Text style={styles.demoText}>
+            Demo data. The backend received the image, but recognition and synthesis arrive with
+            Modules 3-5.
           </Text>
         </View>
       ) : null}
 
-      <View style={styles.antet}>
-        <Text style={styles.titluCarte}>{analiza.titlu}</Text>
-        {analiza.autor ? <Text style={styles.autor}>de {analiza.autor}</Text> : null}
+      <View style={styles.header}>
+        <Text style={styles.bookTitle}>{analysis.title}</Text>
+        {analysis.author ? <Text style={styles.author}>by {analysis.author}</Text> : null}
 
-        <View style={styles.metaRand}>
-          {analiza.rating_mediu !== null ? <RatingStele valoare={analiza.rating_mediu} /> : null}
+        <View style={styles.metaRow}>
+          {analysis.average_rating !== null ? <RatingStars value={analysis.average_rating} /> : null}
           <Chip
-            eticheta={`Încredere ${Math.round(analiza.incredere * 100)}%`}
-            ton={analiza.incredere >= 0.7 ? 'accent' : 'avertisment'}
+            label={`Confidence ${Math.round(analysis.confidence * 100)}%`}
+            tone={analysis.confidence >= 0.7 ? 'accent' : 'warning'}
           />
         </View>
 
-        {analiza.categorii.length > 0 ? (
-          <View style={styles.categorii}>
-            {analiza.categorii.map((categorie) => (
-              <Chip eticheta={categorie} key={categorie} />
+        {analysis.categories.length > 0 ? (
+          <View style={styles.categories}>
+            {analysis.categories.map((category) => (
+              <Chip label={category} key={category} />
             ))}
           </View>
         ) : null}
       </View>
 
-      {analiza.rezumat ? (
-        <View style={styles.sectiune}>
-          <Text style={styles.titluSectiune}>Despre carte</Text>
-          <Text style={styles.rezumat}>{analiza.rezumat}</Text>
+      {analysis.summary ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>About the book</Text>
+          <Text style={styles.summary}>{analysis.summary}</Text>
         </View>
       ) : null}
 
-      {analiza.recenzii.length > 0 ? (
-        <View style={styles.sectiune}>
-          <Text style={styles.titluSectiune}>Ce spun sursele</Text>
+      {analysis.reviews.length > 0 ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>What the sources say</Text>
 
-          <View style={styles.recenzii}>
-            {analiza.recenzii.map((recenzie) => (
-              <CardRecenzie key={recenzie.id} recenzie={recenzie} />
+          <View style={styles.reviews}>
+            {analysis.reviews.map((review) => (
+              <ReviewCard key={review.id} review={review} />
             ))}
           </View>
         </View>
       ) : null}
 
       <Button
-        label="Scanează altă carte"
+        label="Scan another book"
         onPress={() => router.replace('/scan/camera')}
-        style={styles.butonFinal}
+        style={styles.finalButton}
         variant="secondary"
       />
     </Screen>
   )
 }
 
-/** Ecranul afișat cât timp job-ul e în lucru. */
-function StareInProgres({ status }: { status: 'pending' | 'running' }) {
-  const mesaj =
+/** The screen shown while the job is in progress. */
+function InProgressState({ status }: { status: 'pending' | 'running' }) {
+  const message =
     status === 'pending'
-      ? 'Am primit imaginea. Aștept să înceapă analiza…'
-      : 'Citesc coperta și adun informații despre carte…'
+      ? 'Image received. Waiting for the analysis to start…'
+      : 'Reading the cover and gathering information about the book…'
 
   return (
-    <Screen contentStyle={styles.centrat}>
+    <Screen contentStyle={styles.centered}>
       <ActivityIndicator color={colors.accent} size="large" />
-      <Text style={styles.titluStare}>Se analizează</Text>
-      <Text style={styles.textStare}>{mesaj}</Text>
-      <Text style={styles.notaStare}>
-        Pe un laptop fără placă video dedicată, pasul complet poate dura până la două minute.
+      <Text style={styles.stateTitle}>Analyzing</Text>
+      <Text style={styles.stateText}>{message}</Text>
+      <Text style={styles.stateNote}>
+        On a laptop without a dedicated graphics card, the full step can take up to two minutes.
       </Text>
     </Screen>
   )
 }
 
-/** Un extras dintr-o sursă, cu link către original. */
-function CardRecenzie({ recenzie }: { recenzie: RecenzieSursa }) {
-  const areLink = recenzie.url !== null
+/** An excerpt from a source, with a link to the original. */
+function ReviewCard({ review }: { review: SourceReview }) {
+  const hasLink = review.url !== null
 
   return (
     <Card
-      {...(areLink
+      {...(hasLink
         ? {
             onPress: () => {
-              void Linking.openURL(recenzie.url as string)
+              void Linking.openURL(review.url as string)
             },
           }
         : {})}
     >
-      <View style={styles.antetRecenzie}>
-        <Chip eticheta={NUME_SURSA[recenzie.sursa]} ton="accent" />
-        {areLink ? <Feather color={colors.inkFaint} name="external-link" size={14} /> : null}
+      <View style={styles.reviewHeader}>
+        <Chip label={SOURCE_NAME[review.source]} tone="accent" />
+        {hasLink ? <Feather color={colors.inkFaint} name="external-link" size={14} /> : null}
       </View>
 
-      <Text style={styles.titluRecenzie}>{recenzie.titlu_sursa}</Text>
-      <Text style={styles.extrasRecenzie}>{recenzie.extras}</Text>
+      <Text style={styles.reviewTitle}>{review.source_title}</Text>
+      <Text style={styles.reviewExcerpt}>{review.excerpt}</Text>
     </Card>
   )
 }
 
 const styles = StyleSheet.create({
-  centrat: {
+  centered: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.md,
   },
-  bara: {
+  bar: {
     marginBottom: spacing.lg,
   },
-  avertismentDemo: {
+  demoWarning: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: spacing.sm,
@@ -227,81 +226,81 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accentSoft,
     borderRadius: radius.md,
   },
-  textDemo: {
+  demoText: {
     ...typography.caption,
     flex: 1,
     color: colors.accent,
   },
-  antet: {
+  header: {
     gap: spacing.md,
   },
-  titluCarte: {
+  bookTitle: {
     ...typography.displayMedium,
     color: colors.ink,
   },
-  autor: {
+  author: {
     ...typography.body,
     color: colors.inkMuted,
     marginTop: -spacing.sm,
   },
-  metaRand: {
+  metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
     flexWrap: 'wrap',
   },
-  categorii: {
+  categories: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.sm,
   },
-  sectiune: {
+  section: {
     marginTop: spacing.xxl,
     gap: spacing.md,
   },
-  titluSectiune: {
+  sectionTitle: {
     ...typography.displaySmall,
     color: colors.ink,
   },
-  rezumat: {
+  summary: {
     ...typography.bodyReading,
     color: colors.ink,
   },
-  recenzii: {
+  reviews: {
     gap: spacing.md,
   },
-  antetRecenzie: {
+  reviewHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: spacing.sm,
   },
-  titluRecenzie: {
+  reviewTitle: {
     ...typography.titleCard,
     color: colors.ink,
     marginBottom: spacing.xs,
   },
-  extrasRecenzie: {
+  reviewExcerpt: {
     ...typography.body,
     color: colors.inkMuted,
   },
-  titluStare: {
+  stateTitle: {
     ...typography.displaySmall,
     color: colors.ink,
     textAlign: 'center',
   },
-  textStare: {
+  stateText: {
     ...typography.body,
     color: colors.inkMuted,
     textAlign: 'center',
   },
-  notaStare: {
+  stateNote: {
     ...typography.caption,
     color: colors.inkFaint,
     textAlign: 'center',
     maxWidth: 280,
   },
-  butonFinal: {
+  finalButton: {
     marginTop: spacing.xxl,
   },
 })

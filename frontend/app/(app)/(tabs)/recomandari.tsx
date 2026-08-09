@@ -1,39 +1,39 @@
-/** Recomandări personalizate (date demonstrative până la Modulul 6). */
+/** Personalized recommendations (demo data until Module 6). */
 
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 
-import { CardCarte } from '@/components/book/CardCarte'
-import { NotaDemo } from '@/components/ui/NotaDemo'
+import { BookCard } from '@/components/book/CardCarte'
+import { DemoNote } from '@/components/ui/NotaDemo'
 import { Screen } from '@/components/ui/Screen'
-import { DATE_DEMONSTRATIVE, useRecomandari } from '@/features/library/hooks'
+import { DEMO_DATA, useRecommendations } from '@/features/library/hooks'
 import { colors, spacing, typography } from '@/theme'
 
-export default function RecomandariScreen() {
-  const { data: recomandari, isPending } = useRecomandari()
+export default function RecommendationsScreen() {
+  const { data: recommendations, isPending } = useRecommendations()
 
   return (
     <Screen scrollable>
-      <View style={styles.antet}>
-        <Text style={styles.eyebrow}>Pentru tine</Text>
-        <Text style={styles.titlu}>Ce ai putea citi mai departe</Text>
-        <Text style={styles.subtitlu}>
-          Sugestiile pornesc de la cărțile pe care le-ai scanat și de la notele pe care le-ai dat.
+      <View style={styles.header}>
+        <Text style={styles.eyebrow}>For you</Text>
+        <Text style={styles.title}>What you could read next</Text>
+        <Text style={styles.subtitle}>
+          Suggestions are based on the books you've scanned and the ratings you've given.
         </Text>
       </View>
 
-      {DATE_DEMONSTRATIVE ? (
-        <NotaDemo mesaj="Date demonstrative — recomandările reale sosesc cu Modulul 6 al backendului." />
+      {DEMO_DATA ? (
+        <DemoNote message="Demo data — real recommendations arrive with backend Module 6." />
       ) : null}
 
       {isPending ? (
-        <ActivityIndicator color={colors.accent} style={styles.incarcare} />
+        <ActivityIndicator color={colors.accent} style={styles.loading} />
       ) : (
-        <View style={styles.lista}>
-          {recomandari?.map((recomandare) => (
-            <CardCarte
-              carte={recomandare.carte}
-              key={recomandare.id}
-              subsol={recomandare.explicatie}
+        <View style={styles.list}>
+          {recommendations?.map((recommendation) => (
+            <BookCard
+              book={recommendation.book}
+              key={recommendation.id}
+              footer={recommendation.explanation}
             />
           ))}
         </View>
@@ -43,7 +43,7 @@ export default function RecomandariScreen() {
 }
 
 const styles = StyleSheet.create({
-  antet: {
+  header: {
     gap: spacing.xs,
     marginBottom: spacing.xl,
   },
@@ -51,19 +51,19 @@ const styles = StyleSheet.create({
     ...typography.overline,
     color: colors.accent,
   },
-  titlu: {
+  title: {
     ...typography.displayLarge,
     color: colors.ink,
   },
-  subtitlu: {
+  subtitle: {
     ...typography.body,
     color: colors.inkMuted,
     marginTop: spacing.xs,
   },
-  incarcare: {
+  loading: {
     marginTop: spacing.xxl,
   },
-  lista: {
+  list: {
     gap: spacing.md,
     marginTop: spacing.xl,
   },

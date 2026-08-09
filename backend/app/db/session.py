@@ -1,4 +1,4 @@
-"""Configurarea sesiunii de bază de date (SQLAlchemy 2.0 async)."""
+"""Database session setup (SQLAlchemy 2.0 async)."""
 
 from collections.abc import AsyncIterator
 
@@ -15,28 +15,28 @@ AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, auto
 
 
 class Base(DeclarativeBase):
-    """Clasa de bază pentru toate modelele SQLAlchemy din Glance."""
+    """Base class for all SQLAlchemy models in Glance."""
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:
-    """Furnizează o sesiune de bază de date pentru un singur request.
+    """Provides a database session for a single request.
 
     Yields:
-        O sesiune `AsyncSession` care se închide automat la finalul request-ului.
+        An `AsyncSession` that closes automatically at the end of the request.
     """
     async with AsyncSessionLocal() as session:
         yield session
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
-    """Dependency care expune fabrica de sesiuni curentă.
+    """Dependency that exposes the current session factory.
 
-    Indirecția există ca task-urile de fundal (care nu pot primi o sesiune
-    de request, deja închisă până rulează ele) să-și poată deschide propria
-    sesiune din aceeași fabrică pe care testele o suprascriu — altfel un
-    worker ar scrie mereu în baza de date de producție, chiar și în teste.
+    This indirection exists so that background tasks (which cannot receive
+    a request session, already closed by the time they run) can open their
+    own session from the same factory that tests override — otherwise a
+    worker would always write to the production database, even in tests.
 
     Returns:
-        Fabrica de sesiuni `AsyncSessionLocal`.
+        The `AsyncSessionLocal` session factory.
     """
     return AsyncSessionLocal

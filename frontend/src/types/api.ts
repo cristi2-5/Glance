@@ -1,14 +1,14 @@
 /**
- * Tipuri care oglindesc exact schemele Pydantic ale backendului.
+ * Types that mirror the backend's Pydantic schemas exactly.
  *
- * Sursa de adevăr e schema OpenAPI expusă de FastAPI la `/openapi.json`.
- * Când backendul se schimbă, se actualizează întâi acest fișier — restul
- * clientului compilează pe baza lui, deci nepotrivirile ies la typecheck,
- * nu la runtime pe telefon.
+ * The source of truth is the OpenAPI schema exposed by FastAPI at
+ * `/openapi.json`. When the backend changes, this file is updated first —
+ * the rest of the client compiles against it, so mismatches surface at
+ * typecheck time, not at runtime on the phone.
  */
 
 /** `app/schemas/user.py` — `UserPublic`. */
-export interface UtilizatorPublic {
+export interface UserPublic {
   id: number
   email: string
   is_active: boolean
@@ -17,76 +17,76 @@ export interface UtilizatorPublic {
 }
 
 /** `app/schemas/auth.py` — `TokenResponse`. */
-export interface RaspunsTokenuri {
+export interface TokenResponse {
   access_token: string
   refresh_token: string
   token_type: string
 }
 
-/** Corpul pentru `POST /auth/register` și `POST /auth/login`. */
-export interface CredentialeRequest {
+/** Body for `POST /auth/register` and `POST /auth/login`. */
+export interface CredentialsRequest {
   email: string
-  /** Minim 8 caractere — constrângere impusă și de backend. */
+  /** Minimum 8 characters — also enforced by the backend. */
   password: string
 }
 
-/** Corpul pentru `POST /auth/refresh` și `POST /auth/logout`. */
+/** Body for `POST /auth/refresh` and `POST /auth/logout`. */
 export interface RefreshRequest {
   refresh_token: string
 }
 
-/** `app/schemas/job.py` — `JobCreated`, răspunsul la `POST /books/analyze-cover`. */
-export interface JobCreat {
+/** `app/schemas/job.py` — `JobCreated`, the response for `POST /books/analyze-cover`. */
+export interface JobCreated {
   job_id: number
 }
 
 /**
- * Stările unui job, din `JobStatus` (`app/models/job.py`).
+ * The possible states of a job, from `JobStatus` (`app/models/job.py`).
  */
-export type StatusJob = 'pending' | 'running' | 'done' | 'failed'
+export type JobStatus = 'pending' | 'running' | 'done' | 'failed'
 
 /**
- * `app/schemas/job.py` — `JobPublic`, răspunsul la `GET /jobs/{id}`.
+ * `app/schemas/job.py` — `JobPublic`, the response for `GET /jobs/{id}`.
  *
- * Atenție la asimetria de denumire față de `JobCreat`: la creare câmpul e
- * `job_id`, la citire e `id`. E o particularitate a backendului, aplatizată
- * în hook-urile din `src/features/scan/`.
+ * Note the naming asymmetry with `JobCreated`: at creation the field is
+ * `job_id`, on read it's `id`. This is a backend quirk, flattened away in
+ * the hooks under `src/features/scan/`.
  */
 export interface JobPublic {
   id: number
-  status: StatusJob
-  /** Populat doar când `status === 'done'`. Forma depinde de modulul de backend. */
+  status: JobStatus
+  /** Populated only when `status === 'done'`. Shape depends on the backend module. */
   result: Record<string, unknown> | null
-  /** Populat doar când `status === 'failed'`. */
+  /** Populated only when `status === 'failed'`. */
   error: string | null
   created_at: string
   updated_at: string
 }
 
 /**
- * Rezultatul analizei unei coperți.
+ * The result of analyzing a cover.
  *
- * Deocamdată backendul (Modulul 2) întoarce un placeholder; Modulele 3-5 vor
- * popula câmpurile reale. Tipul e definit acum, iar mock-urile îl respectă,
- * ca ecranele să nu se schimbe când sosesc datele adevărate.
+ * For now the backend (Module 2) returns a placeholder; Modules 3-5 will
+ * populate the real fields. The type is defined now, and the mocks respect
+ * it, so the screens don't change when the real data arrives.
  */
-export interface RezultatAnaliza {
-  titlu: string
-  autor: string | null
-  /** Încrederea recunoașterii, 0-1. Sub un prag, oferim corecție manuală. */
-  incredere: number
-  rezumat: string | null
-  coperta_url: string | null
-  categorii: string[]
-  rating_mediu: number | null
-  recenzii: RecenzieSursa[]
+export interface AnalysisResult {
+  title: string
+  author: string | null
+  /** Recognition confidence, 0-1. Below a threshold, we offer manual correction. */
+  confidence: number
+  summary: string | null
+  cover_url: string | null
+  categories: string[]
+  average_rating: number | null
+  reviews: SourceReview[]
 }
 
-/** O opinie critică atribuită unei surse, pentru trasabilitate. */
-export interface RecenzieSursa {
+/** A critical opinion attributed to a source, for traceability. */
+export interface SourceReview {
   id: string
-  sursa: 'wikipedia' | 'open_library' | 'google_books'
-  titlu_sursa: string
-  extras: string
+  source: 'wikipedia' | 'open_library' | 'google_books'
+  source_title: string
+  excerpt: string
   url: string | null
 }

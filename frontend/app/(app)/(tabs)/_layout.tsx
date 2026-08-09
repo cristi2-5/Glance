@@ -1,4 +1,4 @@
-/** Bara de navigare principală: Acasă, Recomandări, Profil. */
+/** The main navigation bar: Home, Recommendations, Profile. */
 
 import { Feather } from '@expo/vector-icons'
 import { Tabs } from 'expo-router'
@@ -27,21 +27,21 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Acasă',
+          title: 'Home',
           tabBarIcon: ({ color, size }) => <Feather name="home" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="recomandari"
         options={{
-          title: 'Recomandări',
+          title: 'Recommendations',
           tabBarIcon: ({ color, size }) => <Feather name="compass" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
         name="profil"
         options={{
-          title: 'Profil',
+          title: 'Profile',
           tabBarIcon: ({ color, size }) => <Feather name="user" color={color} size={size} />,
         }}
       />

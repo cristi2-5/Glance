@@ -1,4 +1,4 @@
-"""Dependențe FastAPI comune: sesiune de bază de date, utilizator curent."""
+"""Common FastAPI dependencies: database session, current user."""
 
 from typing import Annotated
 
@@ -7,7 +7,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.exceptions import CredentialeInvalide
+from app.core.exceptions import InvalidCredentials
 from app.core.security import JWTError, decode_access_token
 from app.db.session import get_db, get_session_factory
 from app.models.user import User
@@ -18,36 +18,36 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 
 
-async def utilizator_curent(
+async def current_user(
     db: DbSession,
     token: Annotated[str | None, Depends(oauth2_scheme)],
 ) -> User:
-    """Rezolvă utilizatorul autentificat din tokenul JWT de acces.
+    """Resolves the authenticated user from the access JWT.
 
     Args:
-        db: Sesiunea de bază de date curentă.
-        token: JWT-ul de acces extras din header-ul `Authorization: Bearer`.
+        db: The current database session.
+        token: The access JWT extracted from the `Authorization: Bearer` header.
 
     Returns:
-        Instanța `User` corespunzătoare tokenului.
+        The `User` instance corresponding to the token.
 
     Raises:
-        CredentialeInvalide: Dacă tokenul lipsește, e invalid, expirat sau
-            nu mai corespunde unui utilizator activ.
+        InvalidCredentials: If the token is missing, invalid, expired, or
+            no longer corresponds to an active user.
     """
     if token is None:
-        raise CredentialeInvalide("Token de acces lipsă.")
+        raise InvalidCredentials("Missing access token.")
 
     try:
         user_id = decode_access_token(token)
     except (JWTError, ValueError) as exc:
-        raise CredentialeInvalide("Token de acces invalid sau expirat.") from exc
+        raise InvalidCredentials("Invalid or expired access token.") from exc
 
     user = await db.scalar(select(User).where(User.id == user_id))
     if user is None or not user.is_active:
-        raise CredentialeInvalide("Utilizatorul nu mai este activ.")
+        raise InvalidCredentials("User is no longer active.")
 
     return user
 
 
-UtilizatorCurent = Annotated[User, Depends(utilizator_curent)]
+CurrentUser = Annotated[User, Depends(current_user)]

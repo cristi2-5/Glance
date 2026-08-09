@@ -1,8 +1,8 @@
 /**
- * Marcaj pentru ecranele alimentate din mock-uri.
+ * Marker for screens powered by mock data.
  *
- * Există ca să nu confundăm niciodată date demonstrative cu date reale în
- * timpul dezvoltării. Dispare singur când hook-urile trec pe API real.
+ * Exists so we never confuse demo data with real data during development.
+ * Disappears on its own once the hooks switch to the real API.
  */
 
 import { Feather } from '@expo/vector-icons'
@@ -10,16 +10,16 @@ import { StyleSheet, Text, View } from 'react-native'
 
 import { colors, radius, spacing, typography } from '@/theme'
 
-interface NotaDemoProps {
-  /** Ce anume lipsește din backend, pe scurt. */
-  mesaj: string
+interface DemoNoteProps {
+  /** What exactly is missing from the backend, briefly. */
+  message: string
 }
 
-export function NotaDemo({ mesaj }: NotaDemoProps) {
+export function DemoNote({ message }: DemoNoteProps) {
   return (
     <View style={styles.container}>
       <Feather color={colors.accent} name="info" size={16} />
-      <Text style={styles.text}>{mesaj}</Text>
+      <Text style={styles.text}>{message}</Text>
     </View>
   )
 }

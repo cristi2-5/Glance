@@ -1,27 +1,27 @@
 /**
- * Configurarea cache-ului TanStack Query.
+ * TanStack Query cache configuration.
  */
 
 import { QueryClient } from '@tanstack/react-query'
 
 import { ApiError } from '@/api/errors'
 
-/** Numărul de reîncercări pentru cererile care pot eșua tranzitoriu. */
-const REINCERCARI_MAXIME = 2
+/** Number of retries for requests that can fail transiently. */
+const MAX_RETRIES = 2
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
       /**
-       * Nu reîncercăm erorile de client (4xx): un 401, 403 sau 404 nu se
-       * rezolvă repetând cererea. Reîncercăm doar 5xx și erorile de rețea.
+       * We don't retry client errors (4xx): a 401, 403, or 404 isn't
+       * resolved by repeating the request. We only retry 5xx and network errors.
        */
-      retry(numarIncercari, eroare) {
-        if (eroare instanceof ApiError && eroare.status >= 400 && eroare.status < 500) {
+      retry(failureCount, error) {
+        if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
           return false
         }
-        return numarIncercari < REINCERCARI_MAXIME
+        return failureCount < MAX_RETRIES
       },
     },
     mutations: {

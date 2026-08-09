@@ -1,6 +1,6 @@
 /**
- * Cardul unei cărți în liste: copertă (sau un substitut tipografic),
- * titlu, autor și metadate.
+ * A book's card in lists: cover (or a typographic substitute),
+ * title, author and metadata.
  */
 
 import { Image } from 'expo-image'
@@ -8,38 +8,38 @@ import { StyleSheet, Text, View } from 'react-native'
 
 import { Card } from '@/components/ui/Card'
 import { colors, radius, spacing, typography } from '@/theme'
-import type { CarteSumar } from '@/types/biblioteca'
+import type { BookSummary } from '@/types/biblioteca'
 
-import { RatingStele } from './RatingStele'
+import { RatingStars } from './RatingStele'
 
-interface CardCarteProps {
-  carte: CarteSumar
-  /** Rând suplimentar sub metadate — explicația unei recomandări, de exemplu. */
-  subsol?: string
+interface BookCardProps {
+  book: BookSummary
+  /** Extra row under the metadata — a recommendation's explanation, for example. */
+  footer?: string
   onPress?: () => void
 }
 
-export function CardCarte({ carte, subsol, onPress }: CardCarteProps) {
+export function BookCard({ book, footer, onPress }: BookCardProps) {
   return (
     <Card {...(onPress ? { onPress } : {})} style={styles.card}>
-      <View style={styles.rand}>
-        <Coperta titlu={carte.titlu} url={carte.coperta_url} />
+      <View style={styles.row}>
+        <Cover title={book.title} url={book.cover_url} />
 
-        <View style={styles.detalii}>
-          <Text numberOfLines={2} style={styles.titlu}>
-            {carte.titlu}
+        <View style={styles.details}>
+          <Text numberOfLines={2} style={styles.title}>
+            {book.title}
           </Text>
-          <Text numberOfLines={1} style={styles.autor}>
-            {carte.autor}
+          <Text numberOfLines={1} style={styles.author}>
+            {book.author}
           </Text>
 
-          {carte.rating_mediu !== null ? (
-            <RatingStele marime={12} valoare={carte.rating_mediu} />
+          {book.average_rating !== null ? (
+            <RatingStars size={12} value={book.average_rating} />
           ) : null}
 
-          {subsol ? (
-            <Text numberOfLines={2} style={styles.subsol}>
-              {subsol}
+          {footer ? (
+            <Text numberOfLines={2} style={styles.footer}>
+              {footer}
             </Text>
           ) : null}
         </View>
@@ -49,17 +49,18 @@ export function CardCarte({ carte, subsol, onPress }: CardCarteProps) {
 }
 
 /**
- * Coperta cărții. Când lipsește URL-ul — cazul obișnuit până la Modulul 4 —
- * afișăm inițiala titlului pe fundal cald, în locul unui pătrat gri gol.
+ * The book's cover. When the URL is missing — the usual case until
+ * Module 4 — we show the title's initial on a warm background, instead of
+ * an empty gray square.
  */
-function Coperta({ url, titlu }: { url: string | null; titlu: string }) {
+function Cover({ url, title }: { url: string | null; title: string }) {
   if (url) {
-    return <Image contentFit="cover" source={{ uri: url }} style={styles.coperta} transition={200} />
+    return <Image contentFit="cover" source={{ uri: url }} style={styles.cover} transition={200} />
   }
 
   return (
-    <View style={[styles.coperta, styles.copertaGoala]}>
-      <Text style={styles.initiala}>{titlu.charAt(0).toUpperCase()}</Text>
+    <View style={[styles.cover, styles.emptyCover]}>
+      <Text style={styles.initial}>{title.charAt(0).toUpperCase()}</Text>
     </View>
   )
 }
@@ -68,40 +69,40 @@ const styles = StyleSheet.create({
   card: {
     padding: spacing.md,
   },
-  rand: {
+  row: {
     flexDirection: 'row',
     gap: spacing.md,
   },
-  coperta: {
+  cover: {
     width: 56,
     height: 84,
     borderRadius: radius.sm,
     backgroundColor: colors.surfaceMuted,
   },
-  copertaGoala: {
+  emptyCover: {
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: colors.border,
   },
-  initiala: {
+  initial: {
     ...typography.displayMedium,
     color: colors.borderStrong,
   },
-  detalii: {
+  details: {
     flex: 1,
     gap: spacing.xs,
     justifyContent: 'center',
   },
-  titlu: {
+  title: {
     ...typography.titleCard,
     color: colors.ink,
   },
-  autor: {
+  author: {
     ...typography.caption,
     color: colors.inkMuted,
   },
-  subsol: {
+  footer: {
     ...typography.caption,
     color: colors.accent,
     marginTop: 2,

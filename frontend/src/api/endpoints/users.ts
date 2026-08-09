@@ -1,22 +1,23 @@
-/** Apeluri legate de utilizatorul curent. */
+/** Calls related to the current user. */
 
 import { apiClient } from '@/api/client'
-import type { UtilizatorPublic } from '@/types/api'
+import type { UserPublic } from '@/types/api'
 
 /**
- * Citește profilul utilizatorului autentificat.
+ * Reads the authenticated user's profile.
  *
- * Folosit și ca verificare de sesiune la pornirea aplicației: dacă tokenul
- * din Keychain e expirat, interceptorul îl reînnoiește transparent; dacă nici
- * refresh tokenul nu mai e valid, apelul eșuează cu 401 și sesiunea se curăță.
+ * Also used as a session check at app startup: if the token from the
+ * Keychain has expired, the interceptor renews it transparently; if the
+ * refresh token is no longer valid either, the call fails with 401 and the
+ * session is cleared.
  *
  * Returns:
- *   Utilizatorul curent.
+ *   The current user.
  *
  * Raises:
- *   ApiError: 401 dacă sesiunea nu mai e validă.
+ *   ApiError: 401 if the session is no longer valid.
  */
-export async function getUtilizatorCurent(): Promise<UtilizatorPublic> {
-  const { data } = await apiClient.get<UtilizatorPublic>('/users/me')
+export async function getCurrentUser(): Promise<UserPublic> {
+  const { data } = await apiClient.get<UserPublic>('/users/me')
   return data
 }
