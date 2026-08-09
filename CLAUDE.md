@@ -132,6 +132,8 @@ backend/
 ├── tests/
 │   ├── conftest.py
 │   └── fixtures/                   # coperți de test, răspunsuri HTTP mock
+├── docs/
+│   └── module-N-nume.md            # rezumat scris la finalul fiecărui modul
 ├── data/                           # SQLite + Chroma (în .gitignore)
 ├── .env.example
 ├── pyproject.toml
@@ -175,6 +177,7 @@ mypy app/                          # type checking
 - Fiecare serviciu extern (Ollama, HTTP, OCR) stă în spatele unui `Protocol`, ca să poată fi înlocuit cu un fake în teste.
 - Denumire variabile: românește acolo unde e mai clar din domeniu (`carte`, `recenzii`, `utilizator_curent`), engleză pentru termeni tehnici standard (`request`, `response`, `session`).
 - Fiecare modul nou vine cu teste `pytest` înainte de a fi considerat „gata".
+- La finalul fiecărui modul se scrie un fișier de rezumat în `backend/docs/module-N-nume.md`: ce s-a implementat, deciziile tehnice luate, ce fișiere au apărut, cum se verifică (comenzi de test). Vezi `backend/docs/module-0-fundatie.md` ca exemplu.
 
 ## Reguli stricte
 
