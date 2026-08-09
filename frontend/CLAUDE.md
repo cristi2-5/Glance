@@ -165,7 +165,7 @@ The frontend progresses **in parallel with the backend**, module by module. Don'
       *Done when:* register → login → session persists across restart → logout, all verified on the phone.
 - [x] **Module 2: Scan skeleton** — `expo-camera`, resize before upload, `POST /books/analyze-cover`, polling on `GET /jobs/{id}` with automatic stop, result screen with `pending`/`running`/`done`/`failed` states.
       *Done when:* a real photo goes through the flow up to displaying the placeholder result.
-- [ ] **Module 3: Vision** — display the real title/author with confidence score; **manual-correction screen** when confidence is below threshold. The `AnalysisResult` type already exists in `src/types/api.ts`.
+- [x] **Module 3: Vision** — real title/author with confidence displayed on the result screen (`app/(app)/scan/[jobId].tsx`); confidence-chip tone and the "Fix the title" prompt both key off the backend's `needs_review` flag, never a local threshold. Manual-correction screen at `app/(app)/scan/correct/[jobId].tsx`, wired to `PATCH /jobs/{id}/correction` via `useCorrectJob` (`src/features/scan/hooks.ts`), which writes the result straight into the `['job', jobId]` query cache on success.
 - [ ] **Module 4: Data fetcher** — real covers (`cover_url` → `expo-image`), categories, average rating.
 - [ ] **Module 5: RAG** — real summary with citations; every claim must link to a tappable source. The `SourceReview` structure is already in the result screen.
 - [ ] **Module 6: Recommendations** — replace the mocks in `src/features/library/hooks.ts`, set `DEMO_DATA` to `false`, check the types in `src/types/biblioteca.ts` against the real schema.

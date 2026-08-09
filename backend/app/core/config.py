@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     # Upload
     max_upload_size_bytes: int = 8 * 1024 * 1024  # 8 MB
 
+    # Vision (Module 3)
+    image_max_edge_px: int = 768
+    image_jpeg_quality: int = 85
+    vision_confidence_threshold: float = 0.70
+    vision_min_ocr_chars: int = 6
+    vision_unverified_confidence: float = 0.35
+    ollama_max_retries: int = 2
+    google_books_timeout_seconds: float = 8.0
+
     # CORS
     #
     # The mobile client runs natively (Expo Go), where CORS does not apply —

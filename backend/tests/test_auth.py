@@ -99,9 +99,7 @@ async def test_refresh_rotation_invalidates_old_token(client: AsyncClient) -> No
     new_tokens = renewal.json()
     assert new_tokens["refresh_token"] != tokens["refresh_token"]
 
-    old_retry = await client.post(
-        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
-    )
+    old_retry = await client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
     assert old_retry.status_code == 401
 
     new_works = await client.post(
@@ -124,9 +122,7 @@ async def test_logout_revokes_refresh_token(client: AsyncClient) -> None:
     )
     assert logout_response.status_code == 204
 
-    retry = await client.post(
-        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
-    )
+    retry = await client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
     assert retry.status_code == 401
 
 

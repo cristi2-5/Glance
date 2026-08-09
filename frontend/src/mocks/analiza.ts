@@ -13,6 +13,9 @@ export const DEMO_ANALYSIS: AnalysisResult = {
   title: 'The Name of the Rose',
   author: 'Umberto Eco',
   confidence: 0.94,
+  method: 'ocr',
+  needs_review: false,
+  corrected: false,
   summary:
     'In a Benedictine abbey in northern Italy in the year 1327, the Franciscan friar William of ' +
     'Baskerville is summoned to mediate a theological dispute, but ends up investigating a series of ' +

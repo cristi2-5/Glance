@@ -21,13 +21,20 @@ import { Screen } from '@/components/ui/Screen'
 import { useJob } from '@/features/scan/hooks'
 import { interpretResult } from '@/features/scan/mapper'
 import { colors, radius, spacing, typography } from '@/theme'
-import type { SourceReview } from '@/types/api'
+import type { AnalysisResult, SourceReview } from '@/types/api'
 
 /** Readable labels for the content sources. */
 const SOURCE_NAME: Record<SourceReview['source'], string> = {
   wikipedia: 'Wikipedia',
   open_library: 'Open Library',
   google_books: 'Google Books',
+}
+
+/** Readable captions for how the title/author were recognized. */
+const METHOD_CAPTION: Record<AnalysisResult['method'], string> = {
+  ocr: 'Read from the cover text',
+  vision: 'Recognized visually',
+  manual: 'Corrected by you',
 }
 
 export default function RezultatScanareScreen() {
@@ -119,17 +126,43 @@ export default function RezultatScanareScreen() {
 
         <View style={styles.metaRow}>
           {analysis.average_rating !== null ? <RatingStars value={analysis.average_rating} /> : null}
-          <Chip
-            label={`Confidence ${Math.round(analysis.confidence * 100)}%`}
-            tone={analysis.confidence >= 0.7 ? 'accent' : 'warning'}
-          />
+          {analysis.corrected ? (
+            <Text style={styles.correctedCaption}>Corrected by you</Text>
+          ) : (
+            <Chip
+              label={`Confidence ${Math.round(analysis.confidence * 100)}%`}
+              tone={analysis.needs_review ? 'warning' : 'accent'}
+            />
+          )}
         </View>
+
+        {!analysis.corrected ? (
+          <Text style={styles.methodCaption}>{METHOD_CAPTION[analysis.method]}</Text>
+        ) : null}
 
         {analysis.categories.length > 0 ? (
           <View style={styles.categories}>
             {analysis.categories.map((category) => (
               <Chip label={category} key={category} />
             ))}
+          </View>
+        ) : null}
+
+        {analysis.needs_review ? (
+          <View style={styles.needsReviewCard}>
+            <Feather color={colors.accent} name="help-circle" size={18} />
+            <View style={styles.needsReviewText}>
+              <Text style={styles.needsReviewTitle}>Not fully sure about this one</Text>
+              <Text style={styles.needsReviewBody}>
+                The title or author might not be quite right. You can fix it by hand.
+              </Text>
+            </View>
+            <Button
+              label="Fix the title"
+              onPress={() => router.push(`/scan/correct/${jobId}`)}
+              style={styles.needsReviewButton}
+              variant="secondary"
+            />
           </View>
         ) : null}
       </View>
@@ -249,10 +282,41 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     flexWrap: 'wrap',
   },
+  correctedCaption: {
+    ...typography.label,
+    color: colors.accent,
+  },
+  methodCaption: {
+    ...typography.caption,
+    color: colors.inkFaint,
+  },
   categories: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.sm,
+  },
+  needsReviewCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.accentSoft,
+    borderRadius: radius.md,
+  },
+  needsReviewText: {
+    flex: 1,
+    gap: 2,
+  },
+  needsReviewTitle: {
+    ...typography.label,
+    color: colors.ink,
+  },
+  needsReviewBody: {
+    ...typography.caption,
+    color: colors.inkMuted,
+  },
+  needsReviewButton: {
+    alignSelf: 'center',
   },
   section: {
     marginTop: spacing.xxl,

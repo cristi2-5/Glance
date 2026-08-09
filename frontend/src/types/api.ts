@@ -66,20 +66,34 @@ export interface JobPublic {
 /**
  * The result of analyzing a cover.
  *
- * For now the backend (Module 2) returns a placeholder; Modules 3-5 will
- * populate the real fields. The type is defined now, and the mocks respect
- * it, so the screens don't change when the real data arrives.
+ * Modules 4-5 still populate `summary`, `cover_url`, `categories`,
+ * `average_rating`, and `reviews` as `null`/empty. The type is defined now,
+ * and the mocks respect it, so the screens don't change when that data
+ * arrives.
  */
 export interface AnalysisResult {
   title: string
   author: string | null
-  /** Recognition confidence, 0-1. Below a threshold, we offer manual correction. */
+  /** Recognition confidence, 0-1. Meaningful only for display; the app
+   * never compares it to a threshold itself — see `needs_review`. */
   confidence: number
+  /** Which path produced this result. `app/schemas/vision.py` — `CoverIdentification`. */
+  method: 'ocr' | 'vision' | 'manual'
+  /** `true` when the backend's confidence threshold wasn't met — offer manual correction. */
+  needs_review: boolean
+  /** `true` once the user has overridden the recognized title/author by hand. */
+  corrected: boolean
   summary: string | null
   cover_url: string | null
   categories: string[]
   average_rating: number | null
   reviews: SourceReview[]
+}
+
+/** `app/schemas/vision.py` — `CorrectionRequest`, the body for `PATCH /jobs/{id}/correction`. */
+export interface CorrectionRequest {
+  title: string
+  author?: string | null
 }
 
 /** A critical opinion attributed to a source, for traceability. */

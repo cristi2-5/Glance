@@ -1,12 +1,12 @@
 /** Hooks for the cover scanning flow. */
 
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { analyzeCover } from '@/api/endpoints/books'
-import { getJob } from '@/api/endpoints/jobs'
+import { correctJob, getJob } from '@/api/endpoints/jobs'
 import { JOB_POLLING_INTERVAL_MS } from '@/config/env'
 import { prepareCoverForUpload } from '@/lib/imagine'
-import type { JobCreated, JobPublic } from '@/types/api'
+import type { CorrectionRequest, JobCreated, JobPublic } from '@/types/api'
 
 /** Arguments for starting an analysis. */
 interface AnalysisArgs {
@@ -55,6 +55,26 @@ export function useJob(jobId: number | null) {
       const status = query.state.data?.status
       const isFinished = status === 'done' || status === 'failed'
       return isFinished ? false : JOB_POLLING_INTERVAL_MS
+    },
+  })
+}
+
+/**
+ * Applies a manual title/author correction to a job's result.
+ *
+ * On success, writes the updated job straight into the `['job', jobId]`
+ * cache entry — the result screen reflects the correction immediately,
+ * with no refetch (and no risk of restarting polling).
+ */
+export function useCorrectJob(jobId: number) {
+  const queryClient = useQueryClient()
+
+  return useMutation<JobPublic, Error, CorrectionRequest>({
+    mutationFn(correction) {
+      return correctJob(jobId, correction)
+    },
+    onSuccess(data) {
+      queryClient.setQueryData(['job', jobId], data)
     },
   })
 }

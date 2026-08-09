@@ -1,12 +1,24 @@
 """Tests for the job skeleton: cover upload, polling, owner isolation."""
 
+from io import BytesIO
+
 from httpx import AsyncClient
+from PIL import Image
 
 EMAIL_A = "reader.a@example.com"
 EMAIL_B = "reader.b@example.com"
 PASSWORD = "super-secret-password"
 
-A_SMALL_IMAGE = b"\xff\xd8\xff\xe0" + b"fake-jpeg-content" * 10
+
+def _make_small_jpeg() -> bytes:
+    """A real, decodable JPEG — the pipeline runs `preprocess_cover` for real
+    even when OCR/Ollama/lookup are faked, so the upload must be valid."""
+    buffer = BytesIO()
+    Image.new("RGB", (200, 300), color=(120, 80, 40)).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+A_SMALL_IMAGE = _make_small_jpeg()
 
 
 async def _register_and_login(client: AsyncClient, email: str) -> str:
@@ -35,7 +47,9 @@ async def test_analyze_cover_creates_job_that_becomes_done(client: AsyncClient) 
     assert read.status_code == 200
     body = read.json()
     assert body["status"] == "done"
-    assert body["result"]["image_size_bytes"] == len(A_SMALL_IMAGE)
+    assert body["result"]["title"] == "Dune"
+    assert body["result"]["method"] == "ocr"
+    assert body["result"]["needs_review"] is False
     assert body["error"] is None
 
 

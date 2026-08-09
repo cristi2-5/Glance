@@ -150,8 +150,8 @@ One module per session. Don't move on until the tests pass.
       *Done when:* tests for duplicate register, wrong login, expired token, refresh rotation. See `backend/docs/module-1-auth.md` (local, gitignored).
 - [x] **Module 2: API skeleton + jobs** — routers, `deps.py`, global exception handlers, `jobs` table, `GET /jobs/{id}`, validated upload (max 8 MB, JPEG/PNG/HEIC).
       *Done when:* a fake job goes through `pending → running → done` and is visible only to its owner. See `backend/docs/module-2-schelet-api.md` (local, gitignored).
-- [ ] **Module 3: Vision** — Pillow preprocessing (EXIF rotation, resize 768 px, JPEG q85), RapidOCR, `OllamaClient`, Moondream fallback with `{title, author, confidence}` output, manual-correction endpoint.
-      *Done when:* tests with a fake Ollama client + one `@pytest.mark.slow` test on 3 real covers from `tests/fixtures/`.
+- [x] **Module 3: Vision** — Pillow preprocessing (EXIF rotation, resize 768 px, JPEG q85), RapidOCR, `OllamaClient`, Moondream fallback with `{title, author, confidence}` output, manual-correction endpoint (`PATCH /jobs/{id}/correction`).
+      *Done when:* tests with a fake Ollama client + one `@pytest.mark.slow` test on 3 real covers from `tests/fixtures/covers/` (fixture images still pending — each test case skips individually until supplied). See `backend/docs/module-3-vision.md` (local, gitignored).
 - [ ] **Module 4: Data fetcher & cache** — the three official sources, title+author normalization with `rapidfuzz`, `Book` + `TextSource` models, TTL cache.
       *Done when:* all HTTP mocked with `respx`, zero network calls in the suite.
 - [ ] **Module 5: RAG** — chunking (~500 tokens, overlap 50), embeddings, persistent Chroma, **retrieval mandatorily filtered on `book_id`**, synthesis with Llama 3.2 + source citations, anti-hallucination prompt.

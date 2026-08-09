@@ -11,11 +11,13 @@ from app.core.exceptions import InvalidCredentials
 from app.core.security import JWTError, decode_access_token
 from app.db.session import get_db, get_session_factory
 from app.models.user import User
+from app.services.vision_service import VisionService, build_vision_service
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
+VisionServiceDep = Annotated[VisionService, Depends(build_vision_service)]
 
 
 async def current_user(

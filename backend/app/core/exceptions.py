@@ -64,6 +64,20 @@ class UnsupportedFileType(GlanceError):
     status_code = status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
 
 
+class ImageProcessingFailed(InvalidData):
+    """Raised when an uploaded image cannot be decoded or processed (corrupt, truncated)."""
+
+
+class OllamaUnavailable(ExternalServiceUnavailable):
+    """Raised when Ollama cannot be reached or fails after all retry attempts."""
+
+
+class CoverNotRecognized(GlanceError):
+    """Raised when neither OCR nor vision fallback produced a usable title."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Registers the global exception handlers on the FastAPI application.
 
