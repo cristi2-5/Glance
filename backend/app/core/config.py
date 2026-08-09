@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     # Upload
     max_upload_size_bytes: int = 8 * 1024 * 1024  # 8 MB
 
+    # CORS
+    #
+    # Clientul mobil rulează nativ (Expo Go), unde CORS nu se aplică — lista
+    # asta contează doar pentru Expo Web și pentru pagina de test din `/dev`.
+    # Implicit permitem orice origine, pentru că serverul ascultă doar în
+    # rețeaua locală de dezvoltare. Restrânge lista înainte de orice expunere
+    # dincolo de LAN.
+    cors_origins: list[str] = ["*"]
+
 
 @lru_cache
 def get_settings() -> Settings:
