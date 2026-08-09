@@ -148,8 +148,8 @@ Un modul pe sesiune. Nu se trece mai departe până testele nu trec.
       *Gata când:* `pytest` verde pe testul de health, `mypy app/` curat, `ruff` curat.
 - [x] **Modulul 1: Auth** — modele `User` + `RefreshToken`, `POST /auth/register|login|refresh|logout`, `GET /users/me`. Refresh token opac (SHA-256 în DB, nu JWT), rotation la fiecare refresh.
       *Gata când:* teste pentru register duplicat, login greșit, token expirat, refresh rotation. Vezi `backend/docs/module-1-auth.md`.
-- [ ] **Modulul 2: Schelet API + job-uri** — routere, `deps.py`, exception handlers globale, tabel `jobs`, `GET /jobs/{id}`, upload validat (max 8 MB, JPEG/PNG/HEIC).
-      *Gata când:* un job fake parcurge `pending → running → done` și e vizibil doar proprietarului.
+- [x] **Modulul 2: Schelet API + job-uri** — routere, `deps.py`, exception handlers globale, tabel `jobs`, `GET /jobs/{id}`, upload validat (max 8 MB, JPEG/PNG/HEIC).
+      *Gata când:* un job fake parcurge `pending → running → done` și e vizibil doar proprietarului. Vezi `backend/docs/module-2-schelet-api.md`.
 - [ ] **Modulul 3: Vision** — preprocesare Pillow (rotire EXIF, resize 768 px, JPEG q85), RapidOCR, `OllamaClient`, fallback Moondream cu output `{titlu, autor, incredere}`, endpoint de corecție manuală.
       *Gata când:* teste cu client Ollama fake + un test `@pytest.mark.slow` pe 3 coperți reale din `tests/fixtures/`.
 - [ ] **Modulul 4: Data fetcher & cache** — cele trei surse oficiale, normalizare titlu+autor cu `rapidfuzz`, modele `Book` + `SursaText`, cache cu TTL.

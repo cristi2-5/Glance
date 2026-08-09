@@ -9,7 +9,7 @@ from app.db.session import Base, engine
 
 # Import obligatoriu: înregistrează modelele pe `Base.metadata` înainte de
 # `create_all`. Fără el, tabelele lor nu ar fi create.
-from app.models import RefreshToken, User  # noqa: F401
+from app.models import Job, RefreshToken, User  # noqa: F401
 
 
 async def init_db() -> None:

@@ -5,16 +5,17 @@ from typing import Annotated
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.exceptions import CredentialeInvalide
 from app.core.security import JWTError, decode_access_token
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
+SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 
 
 async def utilizator_curent(

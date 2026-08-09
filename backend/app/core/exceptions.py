@@ -53,6 +53,18 @@ class ServiciuExternIndisponibil(GlanceError):
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
 
+class FisierPreaMare(GlanceError):
+    """Ridicată când fișierul încărcat depășește dimensiunea maximă permisă."""
+
+    status_code = status.HTTP_413_CONTENT_TOO_LARGE
+
+
+class TipFisierNesuportat(GlanceError):
+    """Ridicată când tipul fișierului încărcat nu e printre cele acceptate."""
+
+    status_code = status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Înregistrează handler-ele globale de excepții pe aplicația FastAPI.
 

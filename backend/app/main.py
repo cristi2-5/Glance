@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import auth, users
+from app.api.routes import auth, books, jobs, users
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
@@ -26,6 +26,8 @@ app = FastAPI(title=settings.app_name, lifespan=lifespan)
 register_exception_handlers(app)
 app.include_router(auth.router)
 app.include_router(users.router)
+app.include_router(books.router)
+app.include_router(jobs.router)
 
 
 @app.get("/health")

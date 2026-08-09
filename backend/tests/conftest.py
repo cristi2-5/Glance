@@ -7,10 +7,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.api.deps import get_db
-from app.db.session import Base
+from app.db.session import Base, get_db, get_session_factory
 from app.main import app
-from app.models import RefreshToken, User  # noqa: F401  (înregistrează modelele pe Base.metadata)
+from app.models import (  # noqa: F401  (înregistrează modelele pe Base.metadata)
+    Job,
+    RefreshToken,
+    User,
+)
 
 
 @pytest.fixture
@@ -51,6 +54,7 @@ async def client(
             yield session
 
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_session_factory] = lambda: db_session_factory
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

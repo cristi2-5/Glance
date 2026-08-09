@@ -26,3 +26,17 @@ async def get_db() -> AsyncIterator[AsyncSession]:
     """
     async with AsyncSessionLocal() as session:
         yield session
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Dependency care expune fabrica de sesiuni curentă.
+
+    Indirecția există ca task-urile de fundal (care nu pot primi o sesiune
+    de request, deja închisă până rulează ele) să-și poată deschide propria
+    sesiune din aceeași fabrică pe care testele o suprascriu — altfel un
+    worker ar scrie mereu în baza de date de producție, chiar și în teste.
+
+    Returns:
+        Fabrica de sesiuni `AsyncSessionLocal`.
+    """
+    return AsyncSessionLocal
