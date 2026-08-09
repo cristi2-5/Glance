@@ -1,16 +1,31 @@
 """Punctul de intrare al aplicației FastAPI Glance."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
+from app.api.routes import auth, users
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
+from app.db.init_db import init_db
 
 settings = get_settings()
 configure_logging(debug=settings.debug)
 
-app = FastAPI(title=settings.app_name)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Creează tabelele bazei de date la pornirea aplicației."""
+    await init_db()
+    yield
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 register_exception_handlers(app)
+app.include_router(auth.router)
+app.include_router(users.router)
 
 
 @app.get("/health")

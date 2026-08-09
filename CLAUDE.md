@@ -146,8 +146,8 @@ Un modul pe sesiune. Nu se trece mai departe până testele nu trec.
 
 - [x] **Modulul 0: Fundație** — `pyproject.toml`, venv, `config.py`, `exceptions.py`, `logging.py`, `main.py` cu `/health`, `conftest.py`, `.env.example`, `.gitignore`, `git init`.
       *Gata când:* `pytest` verde pe testul de health, `mypy app/` curat, `ruff` curat.
-- [ ] **Modulul 1: Auth** — modele `User` + `RefreshToken`, `POST /auth/register|login|refresh|logout`, `GET /users/me`.
-      *Gata când:* teste pentru register duplicat, login greșit, token expirat, refresh rotation.
+- [x] **Modulul 1: Auth** — modele `User` + `RefreshToken`, `POST /auth/register|login|refresh|logout`, `GET /users/me`. Refresh token opac (SHA-256 în DB, nu JWT), rotation la fiecare refresh.
+      *Gata când:* teste pentru register duplicat, login greșit, token expirat, refresh rotation. Vezi `backend/docs/module-1-auth.md`.
 - [ ] **Modulul 2: Schelet API + job-uri** — routere, `deps.py`, exception handlers globale, tabel `jobs`, `GET /jobs/{id}`, upload validat (max 8 MB, JPEG/PNG/HEIC).
       *Gata când:* un job fake parcurge `pending → running → done` și e vizibil doar proprietarului.
 - [ ] **Modulul 3: Vision** — preprocesare Pillow (rotire EXIF, resize 768 px, JPEG q85), RapidOCR, `OllamaClient`, fallback Moondream cu output `{titlu, autor, incredere}`, endpoint de corecție manuală.
@@ -157,7 +157,7 @@ Un modul pe sesiune. Nu se trece mai departe până testele nu trec.
 - [ ] **Modulul 5: RAG** — chunking (~500 tokens, overlap 50), embeddings, Chroma persistent, **retrieval filtrat obligatoriu pe `book_id`**, sinteză cu Llama 3.2 + citări la sursă, prompt anti-halucinație.
       *Gata când:* pe un corpus fixture, fiecare afirmație din rezumat e trasabilă la un chunk.
 - [ ] **Modulul 6: Recomandări** — `ReadingHistory`, `Preference`, vector de profil (medie ponderată cu ratingul userului), candidate generation din Chroma, filtrare pe genuri și cărți deja citite, scor + explicație („pentru că ți-a plăcut X"). Content-based pur — un singur user, cold start garantat, fără collaborative filtering.
-- [ ] **Modulul 7: Client** — întâi o pagină HTML de test în `/dev` pentru validarea fluxului, apoi mobil real (Expo/React Native).
+- [ ] **Modulul 7: Client** — întâi o pagină HTML de test în `/dev` pentru validarea fluxului, apoi mobil real (Expo/React Native). Userul vrea să poată testa interfața grafică vizual imediat ce există (idealul: emulator/simulator de telefon) — de ales concret unealta (Expo Go pe telefon fizic, Android Studio emulator, sau altceva) când se ajunge la acest modul, și de actualizat această secțiune atunci.
 
 ## Comenzi utile
 
@@ -186,3 +186,5 @@ mypy app/                          # type checking
 - Fără PyTorch în dependențe.
 - `.env` niciodată în git — doar `.env.example` cu chei fără valori reale.
 - Un singur modul per sesiune, testat și confirmat, apoi următorul.
+
+
