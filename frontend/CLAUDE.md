@@ -4,18 +4,33 @@ Acest fișier se încarcă automat la fiecare sesiune de lucru în `frontend/`. 
 
 ## Regulă de pornire: verifică documentația versionată
 
-**Expo se schimbă rapid.** Înainte de a scrie cod care folosește un SDK Expo, citește documentația pentru versiunea exactă: <https://docs.expo.dev/versions/v57.0.0/>. API-uri schimbate recent și ușor de greșit din memorie:
+**Expo se schimbă rapid.** Înainte de a scrie cod care folosește un SDK Expo, citește documentația pentru versiunea exactă: <https://docs.expo.dev/versions/v54.0.0/>. API-uri schimbate recent și ușor de greșit din memorie:
 
 - `expo-camera` → componenta e `CameraView` + hook-ul `useCameraPermissions` (nu vechiul `Camera`).
 - `expo-image-manipulator` → API contextual `ImageManipulator.manipulate(uri).resize(...).renderAsync()`, apoi `.saveAsync(...)`. `manipulateAsync` există, dar e **deprecated**.
 
 Când tipurile din `node_modules` contrazic documentația, tipurile câștigă — sunt versiunea chiar instalată.
 
+### De ce SDK 54, nu „latest" (57)
+
+Proiectul a fost scaffold-uit inițial cu `expo@latest`, care la acel moment însemna SDK 57. **Expo Go de pe telefon nu ține pasul cu npm** — mai ales pe iOS, unde review-ul Apple întârzie zile sau săptămâni publicarea versiunii de Expo Go compatibile cu un SDK nou. Simptomul: aplicația refuză să deschidă proiectul, cu un mesaj de incompatibilitate de SDK, chiar dacă Expo Go pare „la zi" din App Store.
+
+Verifică întotdeauna ce SDK suportă build-ul *chiar instalat* de Expo Go (nu ce spune pagina de marketing) înainte de a alege versiunea `expo` din `package.json`. Dacă apare din nou o incompatibilitate, downgrade cu:
+
+```bash
+npx expo install expo@^<versiunea-suportata>.0.0
+rm -rf node_modules package-lock.json
+npm install
+npx expo install --fix
+```
+
+După orice schimbare de SDK, verifică din nou `app.json` → `plugins`: fiecare pachet listat acolo trebuie să aibă efectiv un `app.plugin.js` (`ls node_modules/<pachet>/app.plugin.js`). Un pachet fără plugin real (ex. `expo-image`, `expo-status-bar` — niciunul nu are nevoie de plugin) face `expo config`/`expo start` să eșueze tăcut, fără mesaj, pe Node 22+ din cauza „type stripping" experimental lovind fișiere `.ts` din `node_modules`. Simptomul e un exit code 1 fără nicio linie pe stdout sau stderr — dacă se întâmplă asta, rulează direct `node node_modules/expo/node_modules/@expo/cli config --json` ca să vezi eroarea reală, care e ascunsă în spatele CLI-ului `npx expo`.
+
 ## Prezentare generală
 
 Clientul mobil pentru **Glance**: fotografiezi coperta unei cărți, aplicația recunoaște titlul și autorul, adună material din surse deschise, generează un rezumat prin RAG și oferă recomandări.
 
-React Native + Expo SDK 57, TypeScript strict, expo-router. Backendul e local (FastAPI pe laptop) — clientul **nu** vorbește niciodată cu servicii cloud.
+React Native + Expo SDK 54, TypeScript strict, expo-router. Backendul e local (FastAPI pe laptop) — clientul **nu** vorbește niciodată cu servicii cloud.
 
 ## Cum rulezi
 
@@ -79,7 +94,7 @@ Ecranele de scanare trebuie să acopere tot ecranul, fără bara de tab-uri, dar
 
 | Nevoie | Librărie | Observații |
 |---|---|---|
-| Framework | `expo` SDK 57 + `react-native` 0.86 | React 19 |
+| Framework | `expo` SDK 54 + `react-native` 0.81 | React 19.1 |
 | Navigare | `expo-router` | file-based; rutele sunt fișierele din `app/` |
 | Server state | `@tanstack/react-query` | `refetchInterval` face polling-ul pe job-uri |
 | Auth state | `zustand` | singurul state global |
@@ -92,7 +107,7 @@ Ecranele de scanare trebuie să acopere tot ecranul, fără bara de tab-uri, dar
 | Iconițe | `@expo/vector-icons` (Feather) | |
 | Stilizare | `StyleSheet` + tokens din `src/theme` | fără NativeWind — zero config Babel/Metro de întreținut |
 
-`react-dom` e fixat la `19.2.3` ca să coincidă cu `react`. Fără pinning, npm trage `react-dom@19.2.8`, care cere `react@^19.2.8`, și instalarea eșuează cu ERESOLVE. Nu rezolva asta cu `--legacy-peer-deps`.
+`react-dom` trebuie să coincidă exact cu versiunea lui `react` din SDK-ul curent (acum `19.1.0`). O nepotrivire aici produce ERESOLVE la orice `npm install` ulterior, tras de un pachet tranzitiv (`@expo/dom-webview` → `react-server-dom-webpack`). Nu rezolva asta cu `--legacy-peer-deps` — repinează `react-dom` la versiunea corectă și reinstalează curat.
 
 ## Structură de directoare
 

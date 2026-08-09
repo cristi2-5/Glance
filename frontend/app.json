@@ -28,9 +28,7 @@
     },
     "plugins": [
       "expo-router",
-      "expo-status-bar",
       "expo-secure-store",
-      "expo-image",
       "expo-font",
       [
         "expo-camera",
