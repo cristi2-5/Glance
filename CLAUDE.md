@@ -157,7 +157,12 @@ Un modul pe sesiune. Nu se trece mai departe până testele nu trec.
 - [ ] **Modulul 5: RAG** — chunking (~500 tokens, overlap 50), embeddings, Chroma persistent, **retrieval filtrat obligatoriu pe `book_id`**, sinteză cu Llama 3.2 + citări la sursă, prompt anti-halucinație.
       *Gata când:* pe un corpus fixture, fiecare afirmație din rezumat e trasabilă la un chunk.
 - [ ] **Modulul 6: Recomandări** — `ReadingHistory`, `Preference`, vector de profil (medie ponderată cu ratingul userului), candidate generation din Chroma, filtrare pe genuri și cărți deja citite, scor + explicație („pentru că ți-a plăcut X"). Content-based pur — un singur user, cold start garantat, fără collaborative filtering.
-- [ ] **Modulul 7: Client** — întâi o pagină HTML de test în `/dev` pentru validarea fluxului, apoi mobil real (Expo/React Native). Userul vrea să poată testa interfața grafică vizual imediat ce există (idealul: emulator/simulator de telefon) — de ales concret unealta (Expo Go pe telefon fizic, Android Studio emulator, sau altceva) când se ajunge la acest modul, și de actualizat această secțiune atunci.
+- [~] **Modulul 7: Client** — **început devreme, intenționat.** Clientul mobil (Expo + React Native + TypeScript) trăiește în `frontend/`, cu propriul `frontend/CLAUDE.md`. Testare pe **telefon fizic prin Expo Go** (emulatorul Android a fost respins: ~1.5 GB RAM pe un laptop cu 7.4 GB care rulează și Ollama). Pagina HTML de test din `/dev` nu mai e necesară — aplicația reală o înlocuiește.
+      Frontendul e la paritate cu Modulele 0-2. Vezi `frontend/docs/module-0-2-paritate-backend.md`.
+
+### Ritm de lucru: backend și frontend în paralel
+
+Cele două părți avansează **modul cu modul, în paralel** — nu backend complet întâi. După fiecare modul de backend urmează partea de frontend corespunzătoare, ca fiecare capabilitate să poată fi văzută și testată imediat ce există. Ține secțiunea „Module — status" din ambele fișiere `CLAUDE.md` sincronizată.
 
 ## Comenzi utile
 
