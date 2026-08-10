@@ -72,6 +72,10 @@ class OllamaUnavailable(ExternalServiceUnavailable):
     """Raised when Ollama cannot be reached or fails after all retry attempts."""
 
 
+class AIProviderUnavailable(ExternalServiceUnavailable):
+    """Raised when Groq errors, rate-limits, or is unreachable after all retry attempts."""
+
+
 class CoverNotRecognized(GlanceError):
     """Raised when neither OCR nor vision fallback produced a usable title."""
 

@@ -4,9 +4,9 @@ This file is automatically loaded by Claude Code at every session. Don't repeat 
 
 ## Overview
 
-**Glance** — mobile app + 100% local backend. You photograph a book cover, and the app recognizes the title and author, gathers material about the book from open sources, generates a summary via RAG, and offers personalized recommendations based on reading history.
+**Glance** — mobile app + hybrid backend (local storage/embeddings, cloud AI inference). You photograph a book cover, and the app recognizes the title and author, gathers material about the book from open sources, generates a summary via RAG, and offers personalized recommendations based on reading history.
 
-**Strict rule: no calls to cloud LLM APIs (OpenAI, Anthropic API, etc.) and no Google Colab. All AI models run locally through Ollama.**
+**Storage, cache, and embeddings stay 100% local (SQLite, ChromaDB, `nomic-embed-text` via Ollama) — no exceptions.** Vision (cover recognition) and LLM generation (RAG summaries) run on **Groq Cloud**, adopted after the locally-sized models proved insufficient. See "Architecture pivot: local vision/LLM → Groq Cloud" below and the "Strict rules" section for the current, precise boundary.
 
 ## Hardware constraints (decisive for design)
 
@@ -27,21 +27,47 @@ Client (mobile app)
       ▼
 FastAPI backend (local, on laptop)
       │
-      ├── RapidOCR (ONNX)          → raw text from the cover               [fast, <1 s]
-      ├── Moondream (via Ollama)   → fallback when OCR is unreliable       [slow, 15-40 s]
+      ├── qwen/qwen3.6-27b (via Groq)  → title/author from the cover, runs first    [cloud, seconds]
+      ├── RapidOCR (ONNX)              → fallback when Groq's guess is unconfirmed  [fast, <1 s]
       ├── Google Books / Open Library / Wikipedia → metadata + text about the book
-      ├── SQLite                   → users, jobs, books, sources, reading_history, preferences
-      ├── ChromaDB                 → embeddings (nomic-embed-text), power both RAG *and* recommendations
-      └── Llama 3.2 (via Ollama)   → summary generated from retrieved context
+      ├── SQLite                       → users, jobs, books, sources, reading_history, preferences
+      ├── ChromaDB                     → embeddings (nomic-embed-text, local via Ollama), power both RAG *and* recommendations
+      └── openai/gpt-oss-120b (via Groq) → summary generated from retrieved context
+
+Local fallback (Settings.ai_provider="ollama"): Moondream and Llama 3.2 via
+Ollama take over the two Groq rows above, unchanged otherwise — see
+"Architecture pivot" below.
 ```
 
 ## Decisions made (don't revisit without a new reason)
 
-### Vision: OCR-first, Moondream as fallback
+### Architecture pivot: local vision/LLM → Groq Cloud
 
-`RapidOCR` (ONNX Runtime, ~10 MB, no torch) reads the text on the cover in under a second. Text candidates are sent to Google Books and matched via fuzzy matching (`rapidfuzz`). Moondream is invoked **only** when OCR returns too little text or the matching score is weak — typically for illustrated covers without clear text.
+**What changed:** as of this decision, `Settings.ai_provider` (default `"groq"`) selects the backend for the two AI-inference steps that were previously Ollama-only:
 
-Reason: on printed text, OCR is more accurate than a 1.8B VLM at proper nouns, and ~30× faster. Moondream stays in the project for cases where visual understanding is actually needed.
+- **Vision** (cover title/author extraction): `moondream` (local, ~1.7 GB, 1.8B params) → `qwen/qwen3.6-27b` on Groq, multimodal, called with JSON mode so it returns `{"title": ..., "author": ...}` directly instead of free text that has to be parsed out of a rambling reply.
+- **RAG summary generation** (Module 5, not yet built): `llama3.2` (local) → `openai/gpt-oss-120b` on Groq.
+
+**Why:** on this laptop's hardware (7.4 GB RAM, CPU-only — see "Hardware constraints"), the locally-sized models were not good enough to ship. Moondream misidentified titles/authors often enough to undermine the OCR-first pipeline's fallback path, and CPU inference for both vision and summary generation was slow enough (15-40 s per call) to make the async job pipeline feel worse than it needed to. Groq's hosted inference is both faster and more accurate at this model size, at the cost of the original "100% local" guarantee.
+
+**What stayed local:** SQLite, ChromaDB, and embeddings (`nomic-embed-text` via Ollama) are unaffected — this pivot is scoped to vision and LLM-generation inference only. See "Strict rules" for the precise, current boundary.
+
+**How it's wired:** both integrations are config-driven, not hardcoded — `Settings.ai_provider: Literal["groq", "ollama"]` in `core/config.py`, plus `Settings.vision_model` / `Settings.llm_model` computed properties that resolve to the right model name for whichever provider is active. `app/services/groq_client.py` defines `AsyncGroqClient`, which is call-compatible with the existing `OllamaClient` Protocol (`app/services/ollama_client.py`) — same `generate(model, prompt, images, format, options)` shape — so `VisionService` and the future RAG service don't know or care which backend they're talking to. `get_active_ai_client()` is the single switch point; reinstating the local-only setup later means setting `AI_PROVIDER=ollama` in `.env`, no code change. Groq errors (including qwen/qwen3.6-27b's preview-model rate limits and instability) are retried with backoff and surfaced as `AIProviderUnavailable`, never left to propagate raw.
+
+### Vision: vision-model-first, OCR as fallback
+
+**Supersedes the original "OCR-first, vision model as fallback" design** (kept below for context — the OCR/catalog matching machinery it describes is unchanged, only the order of operations flipped).
+
+The vision model (Groq by default, Moondream if `ai_provider="ollama"`) now runs on **every** cover, not just when OCR is sparse. `RapidOCR` only runs as a fallback, when the vision model's guess isn't confirmed by the catalog (or fails outright) — and when it does run, `VisionService.identify` keeps whichever of the two results is more confident, so a confirmed OCR reading can still beat an unconfirmed vision guess.
+
+Reason: with Groq now the default (see the "Architecture pivot" decision above), the model is accurate enough to trust first, and the catalog this project confirms against (Google Books / Open Library) doesn't reliably cover the specific books being scanned — so gating the vision model behind a catalog-confirmation step on OCR was routinely paying off less than just asking the model directly. Trade-off accepted knowingly: this calls Groq on every scan (API usage + a few seconds of latency), not just on hard covers.
+
+<details>
+<summary>Original reasoning (OCR-first) — superseded, kept for history</summary>
+
+`RapidOCR` (ONNX Runtime, ~10 MB, no torch) reads the text on the cover in under a second. Text candidates are sent to Google Books and matched via fuzzy matching (`rapidfuzz`). The vision model was invoked **only** when OCR returned too little text or the matching score was weak — typically for illustrated covers without clear text. Reason at the time: on printed text, OCR is more accurate than a vision model at proper nouns, and much faster.
+
+</details>
 
 ### Content sources: official only, no scraping
 
@@ -59,16 +85,18 @@ All of them implement a common `ContentSource` `Protocol`. There is also a `Scra
 
 The vectors generated when a book is ingested serve both RAG (Module 5) and recommendations (Module 6). We don't build two embedding pipelines.
 
-## Ollama models
+## AI models
 
-| Role | Model | RAM | Fallback if too slow |
+| Role | Provider | Model | Notes |
 |---|---|---|---|
-| Vision (fallback) | `moondream` | ~1.7 GB | — |
-| Summary LLM | `llama3.2` (3B) | ~2.0 GB | `llama3.2:1b`, then `qwen3:4b` |
-| Embeddings | `nomic-embed-text` | ~275 MB | stays loaded permanently (long keep-alive) |
+| Vision (primary, OCR is the fallback) | Groq (default) | `qwen/qwen3.6-27b` | multimodal, JSON mode, preview model — see retry notes in the pivot decision above |
+| Vision (primary, OCR is the fallback) | Ollama (`ai_provider="ollama"`) | `moondream` | ~1.7 GB RAM, local |
+| Summary LLM (Module 5) | Groq (default) | `openai/gpt-oss-120b` | |
+| Summary LLM (Module 5) | Ollama (`ai_provider="ollama"`) | `llama3.2` (3B) | ~2.0 GB RAM, local; fallback `llama3.2:1b`, then `qwen3:4b` |
+| Embeddings | Ollama, always | `nomic-embed-text` | ~275 MB RAM, stays loaded permanently (long keep-alive) — never affected by `ai_provider` |
 
 `llama3:latest` (4.7 GB) is too large for this laptop — to be deleted, it's functionally duplicated by `llama3.2`.
-`qwen3:4b` is a backup: better structured output, but "thinking mode" costs time on CPU. To be compared in Module 5.
+`qwen3:4b` is a backup for the Ollama LLM fallback: better structured output, but "thinking mode" costs time on CPU.
 
 ## Tech stack
 
@@ -81,9 +109,10 @@ The vectors generated when a book is ingested serve both RAG (Module 5) and reco
 | Auth | `python-jose[cryptography]` (JWT) + `bcrypt` directly | **not** `passlib` — 1.7.4 breaks with `bcrypt>=4.1`. Clean alternative: `pwdlib[argon2]` |
 | OCR | `rapidocr-onnxruntime` | ONNX, no torch |
 | Image processing | `pillow` | EXIF rotation, resize, recompression |
-| Vision / LLM | `ollama` (Python client) | local |
-| Vector DB | `chromadb` (persistent client) | `./data/chroma` folder |
-| Embeddings | `nomic-embed-text` via Ollama | 768-dim |
+| Vision / LLM (default) | `groq` (Python client) | cloud — `GROQ_API_KEY` in `.env` |
+| Vision / LLM (local fallback) | `ollama` (Python client) | local, `ai_provider="ollama"` |
+| Vector DB | `chromadb` (persistent client) | `./data/chroma` folder, local |
+| Embeddings | `nomic-embed-text` via Ollama | 768-dim, always local |
 | HTTP client | `httpx` (async) | retry + backoff |
 | Fuzzy matching | `rapidfuzz` | title/author normalization |
 | Testing | `pytest` + `pytest-asyncio` + `httpx.AsyncClient` + `respx` | zero real network calls in the test suite |
@@ -114,8 +143,9 @@ backend/
 │   ├── schemas/                    # Pydantic (request/response)
 │   ├── services/
 │   │   ├── ocr_service.py          # RapidOCR + image preprocessing
-│   │   ├── vision_service.py       # Moondream fallback
-│   │   ├── ollama_client.py        # shared wrapper with timeout/retry
+│   │   ├── vision_service.py       # OCR-first, vision-model fallback (Groq or Ollama)
+│   │   ├── ollama_client.py        # local backend: shared wrapper with timeout/retry
+│   │   ├── groq_client.py          # cloud backend (default): shared wrapper, retry, provider switch
 │   │   ├── sources/
 │   │   │   ├── base.py             # ContentSource Protocol
 │   │   │   ├── google_books.py
@@ -186,7 +216,13 @@ mypy app/                          # type checking
 
 ## Strict rules
 
-- No cloud LLM / cloud vision APIs. Everything AI-related runs locally through Ollama.
+The project is **hybrid**, not 100% local: storage and embeddings stay local; vision and LLM generation default to Groq Cloud. This is a deliberate pivot from the original all-local design — see "Architecture pivot: local vision/LLM → Groq Cloud" above for the reasoning (local model accuracy on this hardware was not good enough, and CPU inference was too slow).
+
+- **Storage, cache, and embeddings must stay 100% local** — SQLite, ChromaDB, and `nomic-embed-text` via Ollama. No exceptions, regardless of `ai_provider`.
+- **Vision and LLM generation go through Groq Cloud by default** (`Settings.ai_provider = "groq"`), using `groq.AsyncGroq` with the key in `GROQ_API_KEY`. The local path (`ai_provider = "ollama"`, Moondream + Llama 3.2) must keep working as a fallback — don't let it bit-rot or get deleted.
+- **Never hardcode the provider.** Both integrations go through `Settings.ai_provider` / `Settings.vision_model` / `Settings.llm_model` in `core/config.py`, never a direct `if` on a model name scattered through the code.
+- No other cloud LLM/vision APIs (OpenAI, Anthropic API, etc.) and no Google Colab — Groq is the one deliberate exception, not a general opening.
+- Groq calls must handle rate limits and API errors gracefully (retry with backoff, then raise `AIProviderUnavailable`) — never let a preview-model hiccup propagate as an unhandled exception. See `groq_client.py`.
 - No scraping. Only the official sources listed in the table above.
 - No PyTorch in dependencies.
 - `.env` never in git — only `.env.example` with keys and no real values.

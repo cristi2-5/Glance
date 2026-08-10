@@ -6,6 +6,7 @@ module. Nothing is hardcoded directly in the code.
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -42,6 +43,19 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30
 
+    # AI provider (Module 3/5 pivot)
+    #
+    # "groq": vision (cover title/author extraction) and LLM generation
+    # (RAG summaries) run on Groq Cloud. Adopted because the local models
+    # that fit in 7.4 GB of RAM were not good enough — Moondream
+    # misidentified titles/authors too often and inference was slow on
+    # CPU. "ollama": both stay fully local, the project's original design
+    # — kept working as a fallback, not deleted, in case Groq access goes
+    # away or local accuracy improves enough to matter again. Embeddings
+    # (`ollama_embedding_model`) and ChromaDB are unaffected either way —
+    # they always run locally.
+    ai_provider: Literal["groq", "ollama"] = "groq"
+
     # Ollama
     ollama_host: str = "http://localhost:11434"
     ollama_vision_model: str = "moondream"
@@ -51,6 +65,24 @@ class Settings(BaseSettings):
     # Caps the vision model's reply length. Moondream rambles past the two
     # keys we ask for and gets cut mid-token, producing unparsable JSON.
     ollama_vision_num_predict: int = 96
+
+    # Groq Cloud
+    #
+    # https://console.groq.com/keys — required when ai_provider="groq".
+    groq_api_key: str | None = None
+    # Multimodal, supports JSON mode — used to extract {"title", "author"}
+    # directly from a cover photo. Marked "preview" by Groq: see
+    # `groq_client.py` for the retry/error handling this implies.
+    groq_vision_model: str = "qwen/qwen3.6-27b"
+    # RAG summary generation (Module 5).
+    groq_llm_model: str = "openai/gpt-oss-120b"
+    groq_request_timeout_seconds: int = 60
+    groq_max_retries: int = 2
+    # Floor on completion tokens for JSON-mode calls (see `groq_client.py`).
+    # Groq's models here are reasoning models — even with reasoning turned
+    # off for these calls, they need more headroom than a small non-
+    # reasoning local model (Ollama's `ollama_vision_num_predict`) would.
+    groq_max_tokens: int = 1024
 
     # Upload
     max_upload_size_bytes: int = 8 * 1024 * 1024  # 8 MB
@@ -92,6 +124,16 @@ class Settings(BaseSettings):
     # local development network. Restrict this list before any exposure
     # beyond the LAN.
     cors_origins: list[str] = ["*"]
+
+    @property
+    def vision_model(self) -> str:
+        """The vision model name for the currently active `ai_provider`."""
+        return self.groq_vision_model if self.ai_provider == "groq" else self.ollama_vision_model
+
+    @property
+    def llm_model(self) -> str:
+        """The summary-generation model name for the currently active `ai_provider`."""
+        return self.groq_llm_model if self.ai_provider == "groq" else self.ollama_llm_model
 
 
 @lru_cache

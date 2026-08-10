@@ -1,11 +1,12 @@
-"""Cover identification: OCR-first, vision model as a fallback for sparse text.
+"""Cover identification: vision-model-first, OCR as a fallback.
 
-The pipeline is built around one principle: **legible cover text beats a
-1.8B vision model's guess.** OCR runs first; the catalog lookup only
-*confirms and canonicalizes* what OCR read. The vision model is invoked
-when OCR found too little text to work with — not merely because a catalog
-failed to confirm the reading, which happens routinely for Romanian
-editions and whenever the Google Books quota is exhausted.
+The vision model (Groq by default, Ollama if `Settings.ai_provider` is
+switched back to local — see `groq_client.py`) runs on every cover. OCR
+(`RapidOCR`) only runs when the vision model's guess isn't confirmed by the
+catalog, or fails outright — and when it does run, whichever of the two
+ends up more confident wins, so a confirmed OCR reading can still beat an
+unconfirmed vision guess. See "Vision: vision-model-first, OCR as fallback"
+in `CLAUDE.md` for why this order was chosen over OCR-first.
 """
 
 import json
@@ -20,9 +21,10 @@ from rapidfuzz import fuzz
 from app.core.config import Settings, get_settings
 from app.core.exceptions import CoverNotRecognized
 from app.schemas.vision import CoverIdentification
+from app.services.groq_client import get_active_ai_client
 from app.services.image_preprocessing import preprocess_cover
 from app.services.ocr_service import OcrService, RapidOcrEngine, TextCandidate
-from app.services.ollama_client import OllamaClient, get_ollama_client
+from app.services.ollama_client import OllamaClient
 from app.services.title_lookup import BookCandidate, TitleLookup, build_title_lookup
 
 logger = structlog.get_logger(__name__)
@@ -212,6 +214,12 @@ class VisionService:
     async def identify(self, image_bytes: bytes) -> CoverIdentification:
         """Identifies the book shown on a cover photo.
 
+        The vision model runs first. OCR is the fallback: it only runs when
+        the vision model's guess isn't confirmed by the catalog (or fails
+        outright), and if it does run, the higher-confidence result of the
+        two wins — a confirmed OCR reading can still beat an unconfirmed
+        vision guess.
+
         Args:
             image_bytes: The raw, unprocessed uploaded image content.
 
@@ -220,22 +228,60 @@ class VisionService:
 
         Raises:
             ImageProcessingFailed: If the image cannot be decoded.
-            CoverNotRecognized: If neither OCR nor the vision fallback
+            CoverNotRecognized: If neither the vision model nor OCR
                 produced a usable title.
         """
         prepared = preprocess_cover(image_bytes)
-        ocr_candidates = await self._ocr.extract_candidates(prepared.jpeg_bytes)
+
+        vision_result: CoverIdentification | None
+        try:
+            vision_result = await self._identify_via_vision_model(prepared.jpeg_bytes)
+        except CoverNotRecognized:
+            vision_result = None
+
+        if (
+            vision_result is not None
+            and vision_result.confidence >= self._settings.vision_confidence_threshold
+        ):
+            return vision_result
+
+        ocr_result = await self._identify_via_ocr_fallback(prepared.jpeg_bytes)
+
+        if ocr_result is None:
+            if vision_result is None:
+                raise CoverNotRecognized("Could not identify the book from the cover image.")
+            return vision_result
+
+        if vision_result is None:
+            return ocr_result
+
+        best = max(vision_result, ocr_result, key=lambda result: result.confidence)
+        logger.info(
+            "vision_ocr_fallback_chose",
+            method=best.method,
+            vision_confidence=round(vision_result.confidence, 3),
+            ocr_confidence=round(ocr_result.confidence, 3),
+        )
+        return best
+
+    async def _identify_via_ocr_fallback(self, image_bytes: bytes) -> CoverIdentification | None:
+        """Runs OCR and confirms it against the catalog, as the fallback to the vision model.
+
+        Returns:
+            The OCR-based identification, or `None` if OCR read too little
+            text to be worth trying at all.
+        """
+        ocr_candidates = await self._ocr.extract_candidates(image_bytes)
         ocr_text = self._reading_order_text(ocr_candidates)
 
         has_usable_ocr = (
             bool(ocr_candidates) and len(ocr_text.strip()) >= self._settings.vision_min_ocr_chars
         )
+        if not has_usable_ocr:
+            logger.info("vision_ocr_too_sparse", char_count=len(ocr_text.strip()))
+            return None
 
-        if has_usable_ocr:
-            return await self._identify_from_ocr(ocr_candidates, ocr_text)
-
-        logger.info("vision_ocr_too_sparse", char_count=len(ocr_text.strip()))
-        return await self._identify_via_vision_model(prepared.jpeg_bytes)
+        return await self._identify_from_ocr(ocr_candidates, ocr_text)
 
     @staticmethod
     def _reading_order_text(candidates: list[TextCandidate]) -> str:
@@ -268,8 +314,9 @@ class VisionService:
 
         # The catalog could not confirm the reading — either it does not have
         # this edition (routine for Romanian printings) or it was unreachable.
-        # Either way the cover text itself is still the best evidence we have,
-        # and it beats asking a 1.8B model to guess at proper nouns.
+        # Still returned (not discarded): `identify()` compares this against
+        # the vision model's own unconfirmed guess and keeps whichever is
+        # more confident.
         title, author = self._split_title_and_author(ocr_candidates, known_authors)
         logger.info(
             "vision_identified_via_ocr_unconfirmed",
@@ -420,9 +467,9 @@ class VisionService:
         return title, author
 
     async def _identify_via_vision_model(self, image_bytes: bytes) -> CoverIdentification:
-        """Runs the vision-model fallback and validates its guess against the catalog."""
+        """Runs the vision model and validates its guess against the catalog."""
         raw = await self._ollama.generate(
-            model=self._settings.ollama_vision_model,
+            model=self._settings.vision_model,
             prompt=_VISION_PROMPT,
             images=[image_bytes],
             format="json",
@@ -474,14 +521,17 @@ def build_vision_service() -> VisionService:
     """Factory for the production `VisionService`, wired with real backends.
 
     Returns:
-        A `VisionService` using RapidOCR, Ollama, and the catalog lookup
-        chain. Cheap to call repeatedly: the expensive OCR model session is
-        a cached singleton (see `app.services.ocr_service._get_rapid_ocr`).
+        A `VisionService` using RapidOCR, the catalog lookup chain, and
+        whichever AI backend `Settings.ai_provider` selects (Groq by
+        default, Ollama as the local fallback — see
+        `app.services.groq_client.get_active_ai_client`). Cheap to call
+        repeatedly: the expensive OCR model session is a cached singleton
+        (see `app.services.ocr_service._get_rapid_ocr`).
     """
     settings = get_settings()
     return VisionService(
         ocr=OcrService(RapidOcrEngine()),
-        ollama=get_ollama_client(),
+        ollama=get_active_ai_client(),
         lookup=build_title_lookup(),
         settings=settings,
     )

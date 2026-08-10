@@ -1,4 +1,4 @@
-"""Tests for `VisionService`'s OCR-first / vision-model-fallback branching."""
+"""Tests for `VisionService`'s vision-model-first / OCR-fallback branching."""
 
 import json
 from io import BytesIO
@@ -39,10 +39,43 @@ def _make_service(
     return service, ollama, lookup
 
 
-# --- The OCR path -----------------------------------------------------------
+# --- Vision-first short-circuit ----------------------------------------------
 
 
-async def test_strong_ocr_match_short_circuits_the_vision_model() -> None:
+async def test_confident_vision_match_returns_immediately_without_running_ocr() -> None:
+    # OCR candidates are present and would also match — proving the vision
+    # model's confirmed guess is returned before OCR's machinery ever runs,
+    # not just that the final title happens to agree.
+    ocr_candidates = [
+        TextCandidate(text="Dune", score=0.95, relative_height=40, line_index=0),
+        TextCandidate(text="Frank Herbert", score=0.9, relative_height=20, line_index=1),
+    ]
+    lookup_candidates = [BookCandidate(title="Dune", authors=["Frank Herbert"])]
+    service, ollama, lookup = _make_service(
+        ocr_candidates,
+        lookup_candidates,
+        ollama_response=json.dumps({"title": "Dune", "author": "Frank Herbert"}),
+    )
+
+    result = await service.identify(_cover_bytes())
+
+    assert result.method == "vision"
+    assert result.title == "Dune"
+    assert result.author == "Frank Herbert"
+    assert result.needs_review is False
+    assert len(ollama.calls) == 1
+    # A single query, from the vision guess — OCR's own (multi-query) lookup
+    # machinery in `_build_queries` never ran.
+    assert lookup.queries == ["Dune"]
+
+
+# --- The OCR fallback path ---------------------------------------------------
+
+
+async def test_ocr_fallback_wins_when_vision_fails_to_parse() -> None:
+    # The default `ollama_response=""` in `_make_service` can't be parsed
+    # into a title, so the vision model produces nothing usable and OCR
+    # takes over.
     ocr_candidates = [
         TextCandidate(text="Dune", score=0.95, relative_height=40, line_index=0),
         TextCandidate(text="Frank Herbert", score=0.9, relative_height=20, line_index=1),
@@ -56,7 +89,7 @@ async def test_strong_ocr_match_short_circuits_the_vision_model() -> None:
     assert result.title == "Dune"
     assert result.author == "Frank Herbert"
     assert result.needs_review is False
-    assert ollama.calls == []
+    assert len(ollama.calls) == 1
 
 
 async def test_catalog_queries_use_cover_reading_order_not_text_size() -> None:
@@ -74,23 +107,30 @@ async def test_catalog_queries_use_cover_reading_order_not_text_size() -> None:
     assert lookup.queries[0] == "Jules Verne Ocolul Pamantului in optzeci de zile"
 
 
-async def test_unconfirmed_ocr_is_trusted_instead_of_calling_the_vision_model() -> None:
-    # The catalog is reachable but has no Romanian edition — the real
-    # behavior for this cover. Good OCR must not be thrown away for a guess.
+async def test_ocr_unconfirmed_reading_beats_vision_unconfirmed_guess() -> None:
+    # Neither the vision model's guess nor the OCR reading is catalog-
+    # confirmed (a Romanian edition the catalog doesn't have). Legible cover
+    # text still beats a model's guess: OCR's fixed unconfirmed confidence
+    # is set above vision's, so `identify()`'s max-confidence tie-break picks it.
     settings = get_settings()
     ocr_candidates = [
         TextCandidate(text="Ocolul Pamantului", score=0.95, relative_height=50, line_index=1),
         TextCandidate(text="Jules Verne", score=0.9, relative_height=25, line_index=0),
     ]
-    service, ollama, _lookup = _make_service(ocr_candidates, lookup_candidates=[])
+    service, ollama, _lookup = _make_service(
+        ocr_candidates,
+        lookup_candidates=[],
+        ollama_response=json.dumps({"title": "Some Other Guess", "author": None}),
+    )
 
     result = await service.identify(_cover_bytes())
 
-    assert ollama.calls == [], "a legible cover must not fall through to the vision model"
+    assert len(ollama.calls) == 1
     assert result.method == "ocr"
     assert result.title == "Ocolul Pamantului"
     assert result.author == "Jules Verne"
     assert result.confidence == settings.vision_ocr_unconfirmed_confidence
+    assert result.confidence > settings.vision_unverified_confidence
     assert result.needs_review is True
 
 
@@ -107,7 +147,7 @@ async def test_unreachable_catalog_still_trusts_ocr() -> None:
 
     result = await service.identify(_cover_bytes())
 
-    assert ollama.calls == []
+    assert len(ollama.calls) == 1
     assert result.method == "ocr"
     assert result.title == "Moartea pe Nil"
     assert result.author == "Agatha Christie"
@@ -198,7 +238,7 @@ async def test_author_line_is_found_via_catalog_even_when_the_title_is_not() -> 
 
     result = await service.identify(_cover_bytes())
 
-    assert ollama.calls == []
+    assert len(ollama.calls) == 1
     assert result.author == "Jules Verne"
     # The title spans two lines and must be rejoined in reading order.
     assert result.title == "Ocolul Pamantului in optzeci de zile"
@@ -243,10 +283,10 @@ async def test_diacritic_folding_lets_ocr_match_the_catalog() -> None:
     assert result.needs_review is False
 
 
-# --- The vision-model fallback ---------------------------------------------
+# --- The vision model (primary) ---------------------------------------------
 
 
-async def test_sparse_ocr_falls_back_to_the_vision_model() -> None:
+async def test_confident_vision_guess_is_used_when_ocr_has_nothing_useful() -> None:
     service, ollama, lookup = _make_service(
         ocr_candidates=[TextCandidate(text="Xy", score=0.9, relative_height=10, line_index=0)],
         lookup_candidates=[BookCandidate(title="Neuromancer", authors=["William Gibson"])],
