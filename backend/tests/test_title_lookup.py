@@ -78,6 +78,48 @@ async def test_google_books_quota_exhausted_reports_unavailable() -> None:
     assert outcome.candidates == []
 
 
+async def test_google_books_retries_a_transient_503() -> None:
+    # Observed in production: Google Books answers 503 "Service temporarily
+    # unavailable" intermittently and succeeds on an immediate retry.
+    lookup = GoogleBooksTitleLookup(get_settings())
+
+    with respx.mock:
+        route = respx.get(_VOLUMES_URL)
+        route.side_effect = [
+            httpx.Response(503),
+            httpx.Response(200, json={"items": [{"volumeInfo": {"title": "Dune"}}]}),
+        ]
+        outcome = await lookup.search("dune")
+
+    assert route.call_count == 2
+    assert outcome.available is True
+    assert outcome.candidates[0].title == "Dune"
+
+
+async def test_google_books_does_not_retry_a_quota_refusal() -> None:
+    # 429 will answer the same way however many times it is asked; retrying
+    # only slows every scan down.
+    lookup = GoogleBooksTitleLookup(get_settings())
+
+    with respx.mock:
+        route = respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(429))
+        outcome = await lookup.search("dune")
+
+    assert route.call_count == 1
+    assert outcome.available is False
+
+
+async def test_google_books_gives_up_after_persistent_5xx() -> None:
+    lookup = GoogleBooksTitleLookup(get_settings())
+
+    with respx.mock:
+        route = respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(503))
+        outcome = await lookup.search("dune")
+
+    assert route.call_count == get_settings().catalog_max_retries + 1
+    assert outcome.available is False
+
+
 async def test_google_books_connection_error_reports_unavailable() -> None:
     lookup = GoogleBooksTitleLookup(get_settings())
 

@@ -33,6 +33,10 @@ _MAX_TOP_LINES_FOR_QUERY = 4
 # the author line rather than part of the title.
 _AUTHOR_LINE_MATCH_MIN = 85.0
 
+# A line counts as "prominent" (title or author, not small print) when it is
+# at least this fraction as tall as the largest text on the cover.
+_PROMINENT_HEIGHT_RATIO = 0.35
+
 _VISION_PROMPT = (
     "Look at this book cover. Reply with ONLY a JSON object with exactly two keys: "
     '"title" and "author". Use the exact words printed on the cover, in their original '
@@ -105,6 +109,12 @@ class _ScoredCandidate:
     score: float  # 0-1
 
 
+def _without_tokens(text: str, unwanted: set[str]) -> str:
+    """Drops whole words present in `unwanted`, keeping the original if empty."""
+    kept = " ".join(word for word in text.split() if word not in unwanted)
+    return kept or text
+
+
 def _score_candidate(candidate: BookCandidate, reference_text: str) -> float:
     """Scores how well a book candidate matches a reference text, 0-1.
 
@@ -112,18 +122,28 @@ def _score_candidate(candidate: BookCandidate, reference_text: str) -> float:
     title alone otherwise — the title carries most of the identifying
     signal, but a matching author breaks ties between similarly-named books.
     Both sides are diacritic-folded first (see `normalize_for_match`).
+
+    The author's name is removed from *both* sides before the titles are
+    compared. The cover text contains the author, and catalogs sometimes
+    append it to the title ("Capitan la 15 ani ilustrat, Jules Verne"), so
+    leaving it in scores that padding as if it were a title match — enough
+    to beat the correct edition. Author agreement is still measured, once,
+    through its own term.
     """
     reference = normalize_for_match(reference_text)
-    title_score = fuzz.token_set_ratio(normalize_for_match(candidate.title), reference)
+    title = normalize_for_match(candidate.title)
 
-    if candidate.authors:
-        authors = normalize_for_match(" ".join(candidate.authors))
-        author_score = fuzz.token_set_ratio(authors, reference)
-        combined = 0.7 * title_score + 0.3 * author_score
-    else:
-        combined = title_score
+    if not candidate.authors:
+        return fuzz.token_set_ratio(title, reference) / 100
 
-    return combined / 100
+    authors = normalize_for_match(" ".join(candidate.authors))
+    author_tokens = set(authors.split())
+
+    title_score = fuzz.token_set_ratio(
+        _without_tokens(title, author_tokens), _without_tokens(reference, author_tokens)
+    )
+    author_score = fuzz.token_set_ratio(authors, reference)
+    return (0.7 * title_score + 0.3 * author_score) / 100
 
 
 def _parse_vision_response(raw: str) -> tuple[str, str | None] | None:
@@ -265,19 +285,39 @@ class VisionService:
         )
 
     def _build_queries(self, ocr_candidates: list[TextCandidate]) -> list[str]:
-        """Builds the catalog search queries to try, most specific first."""
+        """Builds the catalog search queries to try, most specific first.
+
+        The first query keeps only *prominent* text — lines at least
+        `_PROMINENT_HEIGHT_RATIO` as tall as the largest one. Covers carry a
+        lot of small print (subtitle, blurb, "PESTE 4 MILIOANE DE EXEMPLARE
+        VÂNDUTE", the publisher's name), and including it buries the title in
+        noise: the Goggins cover searched as "NU STAPANESTE-TI MINTEA SI
+        REUSESTE IMPOSIBILUL RANI DAVID GOGGINS PESTE 4 MILIOANE…" and matched
+        nothing, while "NU MA POTI RANI DAVID GOGGINS" matches exactly.
+
+        Word order barely matters here — scoring uses `token_set_ratio` and
+        the catalogs are search engines — so these are token-selection
+        choices, not ordering ones.
+        """
         reading_order = sorted(ocr_candidates, key=lambda c: c.line_index)
+        tallest = max(c.relative_height for c in ocr_candidates)
+        cutoff = tallest * _PROMINENT_HEIGHT_RATIO
+
+        prominent = [c for c in reading_order if c.relative_height >= cutoff]
+        queries = [" ".join(c.text for c in prominent)]
+
+        # Everything OCR read, in case the title is set in small type and the
+        # prominence filter dropped it.
         full_query = " ".join(c.text for c in reading_order[:_MAX_TOP_LINES_FOR_QUERY])
+        if full_query and full_query not in queries:
+            queries.append(full_query)
 
-        queries = [full_query]
-
-        # The largest text alone, as a fallback: covers often carry a series
-        # name or publisher line that only dilutes the full-text query.
+        # Last resort: the single largest line on its own.
         largest = max(ocr_candidates, key=lambda c: c.relative_height).text
-        if largest and largest != full_query:
+        if largest and largest not in queries:
             queries.append(largest)
 
-        return queries
+        return [q for q in queries if q.strip()]
 
     async def _best_lookup_match(
         self, queries: list[str], reference_text: str
@@ -303,6 +343,14 @@ class VisionService:
                 score = _score_candidate(candidate, reference_text)
                 if best is None or score > best.score:
                     best = _ScoredCandidate(candidate=candidate, score=score)
+
+            # Queries are ordered most-trustworthy first, so a confident match
+            # ends the search: running the vaguer ones afterwards can only
+            # replace a good answer with a worse one that happens to score
+            # higher (an author-only query returning the wrong edition), and
+            # it spends Google Books quota for nothing.
+            if best is not None and best.score >= self._settings.vision_confidence_threshold:
+                break
 
         return any_available, best, known_authors
 
@@ -349,8 +397,15 @@ class VisionService:
                 for index, candidate in enumerate(reading_order)
                 if _looks_like_person_name(candidate.text.strip())
             ]
-            if name_lines:
-                author_index = min(name_lines, key=lambda i: len(reading_order[i].text))
+            # A title wrapped over several lines sets them all at the same
+            # large size ("NU" / "MA POTI" / "RANI"), and in caps each looks
+            # name-shaped. The author is normally alone at its own size, so
+            # prefer a line that does not share its height with others.
+            heights = [round(c.relative_height) for c in reading_order]
+            unshared = [i for i in name_lines if heights.count(heights[i]) == 1]
+            pool = unshared or name_lines
+            if pool:
+                author_index = min(pool, key=lambda i: len(reading_order[i].text))
 
         author = reading_order[author_index].text.strip() if author_index is not None else None
         title_parts = [

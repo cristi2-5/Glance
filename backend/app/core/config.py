@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     google_books_api_key: str | None = None
     google_books_timeout_seconds: float = 8.0
     open_library_timeout_seconds: float = 10.0
+    # Google Books intermittently answers 503 "Service temporarily
+    # unavailable" and succeeds on an immediate retry. Applies to transient
+    # failures only (5xx, timeouts) — a 429 quota refusal is not retried.
+    catalog_max_retries: int = 2
 
     # Vision (Module 3)
     image_max_edge_px: int = 768

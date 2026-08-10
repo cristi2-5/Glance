@@ -14,6 +14,7 @@ treat the second as evidence of anything, so `LookupOutcome` carries an
 `available` flag alongside the candidates.
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -27,6 +28,72 @@ logger = structlog.get_logger(__name__)
 
 _GOOGLE_BOOKS_VOLUMES_URL = "https://www.googleapis.com/books/v1/volumes"
 _OPEN_LIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
+
+_RETRY_BACKOFF_SECONDS = 0.4
+
+
+async def _get_json_with_retry(
+    url: str,
+    params: dict[str, Any],
+    timeout: float,
+    max_retries: int,
+    source: str,
+) -> dict[str, Any] | None:
+    """GETs a JSON document, retrying transient failures.
+
+    Retries server errors (5xx) and connection/timeout failures, which for
+    Google Books are common and clear on an immediate retry. Client errors
+    are *not* retried: a 429 quota refusal or a rejected key will answer the
+    same way however many times it is asked.
+
+    Args:
+        url: The endpoint to query.
+        params: Query-string parameters.
+        timeout: Per-request timeout, in seconds.
+        max_retries: Extra attempts after the first.
+        source: Short label used in log events.
+
+    Returns:
+        The decoded JSON body, or `None` if the catalog could not be reached.
+    """
+    attempts = max_retries + 1
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await client.get(url, params=params)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                logger.warning(
+                    "catalog_request_failed", source=source, attempt=attempt, error=str(exc)
+                )
+            else:
+                if response.is_success:
+                    try:
+                        payload: dict[str, Any] = response.json()
+                        return payload
+                    except ValueError as exc:
+                        logger.warning("catalog_bad_json", source=source, error=str(exc))
+                        return None
+
+                if response.status_code < 500:
+                    logger.warning(
+                        "catalog_request_refused",
+                        source=source,
+                        status=response.status_code,
+                    )
+                    return None
+
+                logger.warning(
+                    "catalog_request_transient_error",
+                    source=source,
+                    attempt=attempt,
+                    status=response.status_code,
+                )
+
+            if attempt < attempts:
+                await asyncio.sleep(_RETRY_BACKOFF_SECONDS * attempt)
+
+    return None
 
 
 class BookCandidate(BaseModel):
@@ -83,6 +150,7 @@ class GoogleBooksTitleLookup:
     def __init__(self, settings: Settings) -> None:
         self._timeout = settings.google_books_timeout_seconds
         self._api_key = settings.google_books_api_key
+        self._max_retries = settings.catalog_max_retries
 
     async def search(self, query: str, limit: int = 5) -> LookupOutcome:
         """See `TitleLookup.search`."""
@@ -93,17 +161,16 @@ class GoogleBooksTitleLookup:
         if self._api_key:
             params["key"] = self._api_key
 
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.get(_GOOGLE_BOOKS_VOLUMES_URL, params=params)
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        payload = await _get_json_with_retry(
+            _GOOGLE_BOOKS_VOLUMES_URL,
+            params,
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            source="google_books",
+        )
+        if payload is None:
             logger.warning(
-                "google_books_lookup_unavailable",
-                query=query,
-                has_api_key=bool(self._api_key),
-                error=str(exc),
+                "google_books_lookup_unavailable", query=query, has_api_key=bool(self._api_key)
             )
             return LookupOutcome.unavailable()
 
@@ -128,26 +195,22 @@ class OpenLibraryTitleLookup:
 
     def __init__(self, settings: Settings) -> None:
         self._timeout = settings.open_library_timeout_seconds
+        self._max_retries = settings.catalog_max_retries
 
     async def search(self, query: str, limit: int = 5) -> LookupOutcome:
         """See `TitleLookup.search`."""
         if not query.strip():
             return LookupOutcome()
 
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.get(
-                    _OPEN_LIBRARY_SEARCH_URL,
-                    params={
-                        "q": query,
-                        "limit": limit,
-                        "fields": "title,author_name",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("open_library_lookup_unavailable", query=query, error=str(exc))
+        payload = await _get_json_with_retry(
+            _OPEN_LIBRARY_SEARCH_URL,
+            {"q": query, "limit": limit, "fields": "title,author_name"},
+            timeout=self._timeout,
+            max_retries=self._max_retries,
+            source="open_library",
+        )
+        if payload is None:
+            logger.warning("open_library_lookup_unavailable", query=query)
             return LookupOutcome.unavailable()
 
         candidates = []

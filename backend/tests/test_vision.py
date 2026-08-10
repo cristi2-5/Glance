@@ -14,6 +14,7 @@ from app.services.vision_service import (
     VisionService,
     _looks_like_person_name,
     _parse_vision_response,
+    _score_candidate,
     normalize_for_match,
 )
 from tests.fakes import FakeOcrEngine, FakeOllamaClient, FakeTitleLookup
@@ -111,6 +112,72 @@ async def test_unreachable_catalog_still_trusts_ocr() -> None:
     assert result.title == "Moartea pe Nil"
     assert result.author == "Agatha Christie"
     assert result.needs_review is True
+
+
+async def test_small_print_is_excluded_from_the_primary_catalog_query() -> None:
+    # The Goggins cover: a subtitle sits between the title lines and the
+    # cover carries marketing and publisher text. Including all of it buried
+    # the title and matched nothing.
+    ocr_candidates = [
+        TextCandidate(text="NU", score=0.9, relative_height=90, line_index=0),
+        TextCandidate(text="STAPANESTE-TI MINTEA SI", score=0.9, relative_height=18, line_index=1),
+        TextCandidate(text="MA POTI", score=0.9, relative_height=90, line_index=2),
+        TextCandidate(text="RANI", score=0.9, relative_height=90, line_index=3),
+        TextCandidate(text="DAVID GOGGINS", score=0.9, relative_height=34, line_index=4),
+        TextCandidate(text="PESTE 4 MILIOANE VANDUTE", score=0.9, relative_height=12, line_index=5),
+        TextCandidate(text="LITERA", score=0.9, relative_height=14, line_index=6),
+    ]
+    service, _ollama, lookup = _make_service(ocr_candidates, [])
+
+    await service.identify(_cover_bytes())
+
+    assert lookup.queries[0] == "NU MA POTI RANI DAVID GOGGINS"
+
+
+async def test_a_confident_match_stops_further_catalog_queries() -> None:
+    ocr_candidates = [
+        TextCandidate(text="Dune", score=0.95, relative_height=50, line_index=0),
+        TextCandidate(text="Frank Herbert", score=0.9, relative_height=20, line_index=1),
+    ]
+    service, _ollama, lookup = _make_service(
+        ocr_candidates, [BookCandidate(title="Dune", authors=["Frank Herbert"])]
+    )
+
+    await service.identify(_cover_bytes())
+
+    # Spending quota on vaguer queries can only replace a good answer with a
+    # worse one that happens to score higher.
+    assert len(lookup.queries) == 1
+
+
+def test_author_name_in_a_catalog_title_does_not_inflate_the_title_score() -> None:
+    # Catalogs sometimes append the author to the title. Scored naively, that
+    # padding beat the correct edition, because the cover text also contains
+    # the author's name.
+    reference = "Jules Verne Un capitand the cinsprezece ani"
+    correct = BookCandidate(title="Căpitan la cincisprezece ani", authors=["Jules Verne"])
+    padded = BookCandidate(title="Capitan la 15 ani ilustrat, Jules Verne", authors=["Jules Verne"])
+
+    assert _score_candidate(correct, reference) > _score_candidate(padded, reference)
+
+
+async def test_multi_line_title_in_caps_is_not_mistaken_for_the_author() -> None:
+    # "NU" / "MA POTI" / "RANI" are all caps and name-shaped, but they share
+    # one large size — a wrapped title. The author stands alone at its own.
+    ocr_candidates = [
+        TextCandidate(text="NU", score=0.9, relative_height=90, line_index=0),
+        TextCandidate(text="MA POTI", score=0.9, relative_height=90, line_index=1),
+        TextCandidate(text="RANI", score=0.9, relative_height=90, line_index=2),
+        TextCandidate(text="DAVID GOGGINS", score=0.9, relative_height=34, line_index=3),
+    ]
+    service, _ollama, _lookup = _make_service(
+        ocr_candidates, lookup_candidates=[], lookup_available=False
+    )
+
+    result = await service.identify(_cover_bytes())
+
+    assert result.author == "DAVID GOGGINS"
+    assert result.title == "NU MA POTI RANI"
 
 
 async def test_author_line_is_found_via_catalog_even_when_the_title_is_not() -> None:
