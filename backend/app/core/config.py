@@ -48,18 +48,37 @@ class Settings(BaseSettings):
     ollama_llm_model: str = "llama3.2"
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_request_timeout_seconds: int = 120
+    # Caps the vision model's reply length. Moondream rambles past the two
+    # keys we ask for and gets cut mid-token, producing unparsable JSON.
+    ollama_vision_num_predict: int = 96
 
     # Upload
     max_upload_size_bytes: int = 8 * 1024 * 1024  # 8 MB
+
+    # Catalog lookup
+    #
+    # Without a key, Google Books uses a shared anonymous quota that is
+    # routinely exhausted (HTTP 429 on every request). Get a free key at
+    # https://console.cloud.google.com/apis/library/books.googleapis.com
+    # When unset or exhausted, the lookup falls back to Open Library.
+    google_books_api_key: str | None = None
+    google_books_timeout_seconds: float = 8.0
+    open_library_timeout_seconds: float = 10.0
 
     # Vision (Module 3)
     image_max_edge_px: int = 768
     image_jpeg_quality: int = 85
     vision_confidence_threshold: float = 0.70
     vision_min_ocr_chars: int = 6
+    # Confidence when the vision model produced a title no catalog could
+    # confirm. Always below the threshold, so it is offered for review.
     vision_unverified_confidence: float = 0.35
+    # Confidence when OCR read the cover well but no catalog could confirm
+    # it — common for Romanian editions, which the catalogs cover poorly.
+    # Below the threshold (so the user is offered a correction), but well
+    # above the vision-model figure: legible cover text beats a 1.8B guess.
+    vision_ocr_unconfirmed_confidence: float = 0.55
     ollama_max_retries: int = 2
-    google_books_timeout_seconds: float = 8.0
 
     # CORS
     #

@@ -1,4 +1,4 @@
-"""Tests for `VisionService`'s OCR-first / Moondream-fallback branching."""
+"""Tests for `VisionService`'s OCR-first / vision-model-fallback branching."""
 
 import json
 from io import BytesIO
@@ -10,7 +10,12 @@ from app.core.config import get_settings
 from app.core.exceptions import CoverNotRecognized
 from app.services.ocr_service import OcrService, TextCandidate
 from app.services.title_lookup import BookCandidate
-from app.services.vision_service import VisionService
+from app.services.vision_service import (
+    VisionService,
+    _looks_like_person_name,
+    _parse_vision_response,
+    normalize_for_match,
+)
 from tests.fakes import FakeOcrEngine, FakeOllamaClient, FakeTitleLookup
 
 
@@ -24,15 +29,19 @@ def _make_service(
     ocr_candidates: list[TextCandidate],
     lookup_candidates: list[BookCandidate],
     ollama_response: str = "",
+    lookup_available: bool = True,
 ) -> tuple[VisionService, FakeOllamaClient, FakeTitleLookup]:
     ocr = OcrService(FakeOcrEngine(ocr_candidates))
     ollama = FakeOllamaClient(ollama_response)
-    lookup = FakeTitleLookup(lookup_candidates)
+    lookup = FakeTitleLookup(lookup_candidates, available=lookup_available)
     service = VisionService(ocr=ocr, ollama=ollama, lookup=lookup, settings=get_settings())
     return service, ollama, lookup
 
 
-async def test_strong_ocr_match_short_circuits_moondream() -> None:
+# --- The OCR path -----------------------------------------------------------
+
+
+async def test_strong_ocr_match_short_circuits_the_vision_model() -> None:
     ocr_candidates = [
         TextCandidate(text="Dune", score=0.95, relative_height=40, line_index=0),
         TextCandidate(text="Frank Herbert", score=0.9, relative_height=20, line_index=1),
@@ -49,7 +58,128 @@ async def test_strong_ocr_match_short_circuits_moondream() -> None:
     assert ollama.calls == []
 
 
-async def test_sparse_ocr_falls_back_to_moondream() -> None:
+async def test_catalog_queries_use_cover_reading_order_not_text_size() -> None:
+    # As printed: "Ocolul Pamantului" above "in optzeci de zile", with the
+    # author line largest. Sorting by height would emit the phrase scrambled.
+    ocr_candidates = [
+        TextCandidate(text="Jules Verne", score=0.95, relative_height=50, line_index=0),
+        TextCandidate(text="Ocolul Pamantului", score=0.9, relative_height=30, line_index=1),
+        TextCandidate(text="in optzeci de zile", score=0.9, relative_height=20, line_index=2),
+    ]
+    service, _ollama, lookup = _make_service(ocr_candidates, [])
+
+    await service.identify(_cover_bytes())
+
+    assert lookup.queries[0] == "Jules Verne Ocolul Pamantului in optzeci de zile"
+
+
+async def test_unconfirmed_ocr_is_trusted_instead_of_calling_the_vision_model() -> None:
+    # The catalog is reachable but has no Romanian edition — the real
+    # behavior for this cover. Good OCR must not be thrown away for a guess.
+    settings = get_settings()
+    ocr_candidates = [
+        TextCandidate(text="Ocolul Pamantului", score=0.95, relative_height=50, line_index=1),
+        TextCandidate(text="Jules Verne", score=0.9, relative_height=25, line_index=0),
+    ]
+    service, ollama, _lookup = _make_service(ocr_candidates, lookup_candidates=[])
+
+    result = await service.identify(_cover_bytes())
+
+    assert ollama.calls == [], "a legible cover must not fall through to the vision model"
+    assert result.method == "ocr"
+    assert result.title == "Ocolul Pamantului"
+    assert result.author == "Jules Verne"
+    assert result.confidence == settings.vision_ocr_unconfirmed_confidence
+    assert result.needs_review is True
+
+
+async def test_unreachable_catalog_still_trusts_ocr() -> None:
+    # Google Books 429: `available=False`. Confidence must not be treated as
+    # evidence against the reading.
+    ocr_candidates = [
+        TextCandidate(text="Moartea pe Nil", score=0.95, relative_height=50, line_index=0),
+        TextCandidate(text="Agatha Christie", score=0.9, relative_height=25, line_index=1),
+    ]
+    service, ollama, _lookup = _make_service(
+        ocr_candidates, lookup_candidates=[], lookup_available=False
+    )
+
+    result = await service.identify(_cover_bytes())
+
+    assert ollama.calls == []
+    assert result.method == "ocr"
+    assert result.title == "Moartea pe Nil"
+    assert result.author == "Agatha Christie"
+    assert result.needs_review is True
+
+
+async def test_author_line_is_found_via_catalog_even_when_the_title_is_not() -> None:
+    # The real Jules Verne cover: the author's name is printed LARGER than
+    # the title, so "tallest line is the title" gets it exactly backwards.
+    # No catalog has this Romanian edition, but every catalog knows the
+    # author — which is what identifies the author line.
+    ocr_candidates = [
+        TextCandidate(text="Jules Verne", score=0.95, relative_height=50, line_index=0),
+        TextCandidate(text="Ocolul Pamantului", score=0.9, relative_height=34, line_index=1),
+        TextCandidate(text="in optzeci de zile", score=0.9, relative_height=28, line_index=2),
+    ]
+    # A different edition by the same author — confirms the name, not the title.
+    lookup_candidates = [
+        BookCandidate(title="Around the World in Eighty Days", authors=["Jules Verne"])
+    ]
+    service, ollama, _lookup = _make_service(ocr_candidates, lookup_candidates)
+
+    result = await service.identify(_cover_bytes())
+
+    assert ollama.calls == []
+    assert result.author == "Jules Verne"
+    # The title spans two lines and must be rejoined in reading order.
+    assert result.title == "Ocolul Pamantului in optzeci de zile"
+    assert result.needs_review is True
+
+
+async def test_author_falls_back_to_name_shape_when_no_catalog_answers() -> None:
+    ocr_candidates = [
+        TextCandidate(text="Jules Verne", score=0.95, relative_height=50, line_index=0),
+        TextCandidate(text="Ocolul Pamantului", score=0.9, relative_height=34, line_index=1),
+    ]
+    service, _ollama, _lookup = _make_service(
+        ocr_candidates, lookup_candidates=[], lookup_available=False
+    )
+
+    result = await service.identify(_cover_bytes())
+
+    assert result.author == "Jules Verne"
+    assert result.title == "Ocolul Pamantului"
+
+
+async def test_diacritic_folding_lets_ocr_match_the_catalog() -> None:
+    # OCR drops Romanian diacritics; the catalog spells them correctly.
+    ocr_candidates = [
+        TextCandidate(
+            text="Ocolul Pamantului in optzeci de zile",
+            score=0.95,
+            relative_height=50,
+            line_index=0,
+        ),
+        TextCandidate(text="Jules Verne", score=0.9, relative_height=25, line_index=1),
+    ]
+    lookup_candidates = [
+        BookCandidate(title="Ocolul Pământului în optzeci de zile", authors=["Jules Verne"])
+    ]
+    service, _ollama, _lookup = _make_service(ocr_candidates, lookup_candidates)
+
+    result = await service.identify(_cover_bytes())
+
+    assert result.method == "ocr"
+    assert result.title == "Ocolul Pământului în optzeci de zile"
+    assert result.needs_review is False
+
+
+# --- The vision-model fallback ---------------------------------------------
+
+
+async def test_sparse_ocr_falls_back_to_the_vision_model() -> None:
     service, ollama, lookup = _make_service(
         ocr_candidates=[TextCandidate(text="Xy", score=0.9, relative_height=10, line_index=0)],
         lookup_candidates=[BookCandidate(title="Neuromancer", authors=["William Gibson"])],
@@ -64,25 +194,37 @@ async def test_sparse_ocr_falls_back_to_moondream() -> None:
     assert lookup.queries == ["Neuromancer"]
 
 
-async def test_ocr_present_but_poor_match_falls_back_to_moondream() -> None:
-    ocr_candidates = [
-        TextCandidate(text="Some Random Cover Text", score=0.9, relative_height=40, line_index=0),
-    ]
-    # The lookup returns a completely unrelated book — the fuzzy score should
-    # land well below the confidence threshold.
+async def test_vision_model_reply_length_is_capped() -> None:
+    settings = get_settings()
     service, ollama, _lookup = _make_service(
-        ocr_candidates,
-        lookup_candidates=[BookCandidate(title="Moby Dick", authors=["Herman Melville"])],
-        ollama_response=json.dumps({"title": "Moby Dick", "author": "Herman Melville"}),
+        ocr_candidates=[],
+        lookup_candidates=[],
+        ollama_response=json.dumps({"title": "Anything", "author": None}),
+    )
+
+    await service.identify(_cover_bytes())
+
+    assert ollama.calls[0].options == {"num_predict": settings.ollama_vision_num_predict}
+
+
+async def test_truncated_vision_json_is_salvaged_not_failed() -> None:
+    # Verbatim from a real run: the model overran into invented keys and was
+    # cut mid-string. The title and author had already arrived intact.
+    truncated = (
+        '{"title": "Moartea pe Nil", "author": "Agatha Christie", "year": "1927", '
+        '"language": "English", "numberOfShips": 1, "numberOfDepts'
+    )
+    service, _ollama, _lookup = _make_service(
+        ocr_candidates=[], lookup_candidates=[], ollama_response=truncated
     )
 
     result = await service.identify(_cover_bytes())
 
-    assert len(ollama.calls) == 1
-    assert result.method == "vision"
+    assert result.title == "Moartea pe Nil"
+    assert result.author == "Agatha Christie"
 
 
-async def test_moondream_non_json_response_raises_cover_not_recognized() -> None:
+async def test_vision_response_without_a_title_raises_cover_not_recognized() -> None:
     service, _ollama, _lookup = _make_service(
         ocr_candidates=[],
         lookup_candidates=[],
@@ -93,11 +235,11 @@ async def test_moondream_non_json_response_raises_cover_not_recognized() -> None
         await service.identify(_cover_bytes())
 
 
-async def test_moondream_result_unverified_by_lookup_gets_fixed_low_confidence() -> None:
+async def test_unconfirmed_vision_guess_gets_fixed_low_confidence() -> None:
     settings = get_settings()
     service, ollama, lookup = _make_service(
         ocr_candidates=[],
-        lookup_candidates=[],  # lookup finds nothing to confirm the guess
+        lookup_candidates=[],
         ollama_response=json.dumps({"title": "An Obscure Zine", "author": None}),
     )
 
@@ -108,3 +250,48 @@ async def test_moondream_result_unverified_by_lookup_gets_fixed_low_confidence()
     assert result.confidence == settings.vision_unverified_confidence
     assert result.needs_review is True
     assert lookup.queries == ["An Obscure Zine"]
+    # An unconfirmed model guess must stay below an unconfirmed OCR reading.
+    assert result.confidence < settings.vision_ocr_unconfirmed_confidence
+
+
+# --- Helpers ----------------------------------------------------------------
+
+
+def test_normalize_for_match_folds_diacritics_and_case() -> None:
+    assert normalize_for_match("Ocolul Pământului ÎN") == "ocolul pamantului in"
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Agatha Christie", True),
+        ("Jules Verne", True),
+        ("Honoré de Balzac", True),
+        ("Ludwig van Beethoven", True),
+        ("Mihail Sadoveanu", True),
+        # Titles that share a name's word count but not its capitalization.
+        ("Moartea pe Nil", False),
+        ("Ocolul Pamantului in optzeci de zile", False),
+        ("Dune", False),  # single word
+        ("Volume 2 Collected", False),  # digits
+        ("", False),
+    ],
+)
+def test_looks_like_person_name(line: str, expected: bool) -> None:
+    assert _looks_like_person_name(line) is expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('{"title": "A", "author": "B"}', ("A", "B")),
+        ('{"title": "A", "author": null}', ("A", None)),
+        ('{"title": "A", "author": "unknown"}', ("A", None)),
+        ('{"title": "A", "author": "B", "extra": "trunc', ("A", "B")),
+        ('prose then {"title": "A", "author": "B"}', ("A", "B")),
+        ("no json at all", None),
+        ('{"author": "B"}', None),
+    ],
+)
+def test_parse_vision_response(raw: str, expected: tuple[str, str | None] | None) -> None:
+    assert _parse_vision_response(raw) == expected

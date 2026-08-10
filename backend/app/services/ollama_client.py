@@ -7,7 +7,7 @@ boundary belong here once, not per-caller.
 
 import asyncio
 from functools import lru_cache
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 import structlog
@@ -31,6 +31,7 @@ class OllamaClient(Protocol):
         prompt: str,
         images: list[bytes] | None = None,
         format: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> str:
         """Generates a completion from a local Ollama model.
 
@@ -39,6 +40,8 @@ class OllamaClient(Protocol):
             prompt: The text prompt.
             images: Optional raw image bytes, for vision models.
             format: Optional response format constraint (`"json"`).
+            options: Optional Ollama runtime options (e.g. `num_predict`,
+                `temperature`).
 
         Returns:
             The generated response text.
@@ -64,6 +67,7 @@ class AsyncOllamaClient:
         prompt: str,
         images: list[bytes] | None = None,
         format: str | None = None,
+        options: dict[str, Any] | None = None,
     ) -> str:
         """See `OllamaClient.generate`.
 
@@ -82,6 +86,7 @@ class AsyncOllamaClient:
                     prompt=prompt,
                     images=images,
                     format=format,  # type: ignore[arg-type]
+                    options=options,
                 )
                 return response.response or ""
             except _RETRYABLE_EXCEPTIONS as exc:
