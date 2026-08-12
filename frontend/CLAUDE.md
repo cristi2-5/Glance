@@ -26,6 +26,18 @@ npx expo install --fix
 
 After any SDK change, re-check `app.json` → `plugins`: every package listed there must actually have an `app.plugin.js` (`ls node_modules/<package>/app.plugin.js`). A package without a real plugin (e.g. `expo-image`, `expo-status-bar` — neither needs one) makes `expo config`/`expo start` fail silently, with no message, on Node 22+ because of experimental "type stripping" hitting `.ts` files inside `node_modules`. The symptom is exit code 1 with no stdout/stderr — if that happens, run `node node_modules/expo/node_modules/@expo/cli config --json` directly to see the real error, which is hidden behind the `npx expo` CLI.
 
+## The design system is a skill — load it before touching any screen
+
+The visual language lives in **`.claude/skills/design-system/SKILL.md`**, implemented by the tokens in `src/theme/`. Load that skill before writing or editing any screen or UI component, before picking a color/size/padding/radius, and before adding a `<Text>` that renders user data (book titles, author names, emails).
+
+It is the authority on three things this file deliberately doesn't repeat:
+
+- **Tokens** — the paper/ink palette, the type scale (every `lineHeight` a multiple of 4), the 4 px spacing grid (`space[1]`…`space[10]`), radii, shadows.
+- **Text fitting** — the per-element truncate-vs-shrink contract (`textFit` presets in `src/theme/text.ts`), plus the structural rules that actually prevent overflow in React Native: `textColumn` on any text inside a row, never a fixed `height` on a text container, `maxFontSizeMultiplier` everywhere.
+- **Safe areas** — which `edges` a screen passes to `Screen`, and why tab screens must not absorb the bottom inset.
+
+The palette changed with this system: the primary action is now **espresso `#3A342E`**, not terracotta, and mustard `#E8C24E` is a *highlight* that must never be a button fill or a text color on paper. The old token names (`background`, `surface`, `accent`, `amber`, `spacing.xs…xxxl`) remain exported as deprecated aliases so un-migrated screens keep compiling — don't use them in new code, and delete each as its last consumer is migrated.
+
 ## Overview
 
 The mobile client for **Glance**: you photograph a book cover, the app recognizes the title and author, gathers material from open sources, generates a summary via RAG, and offers recommendations.
@@ -208,7 +220,7 @@ npx expo install <package>         # NOT `npm install` for Expo packages — pic
 - **Strict type hints.** `strict` + `noUncheckedIndexedAccess`. No unjustified `any`, no `as` that hides a real mismatch (documented exception: `FormData` with local files in React Native).
 - **Docstrings** on every module, exported component, and public function — what it does, parameters, return value. Explain *why*, not *what*, when the decision isn't obvious.
 - **Naming**: English throughout, including domain terms — the codebase was translated from an earlier Romanian-first convention; don't reintroduce Romanian identifiers. Filenames were deliberately left unchanged (see the directory structure note above) even though the exported symbols inside them are English.
-- **No literal colors or spacing** in components. Everything from `src/theme`.
+- **No literal colors or spacing** in components. Everything from `src/theme` — see the `design-system` skill.
 - **No `console.log`** in code that stays. For on-phone diagnostics, use the screen — the user doesn't see the Metro terminal.
 - **Every screen explicitly handles four states**: loading, empty, error, success. A screen that assumes data exists is a screen that will crash.
 - **The types in `src/types/api.ts` are the contract.** When the backend changes, update them *first*; the typecheck then shows which screens need adjusting.

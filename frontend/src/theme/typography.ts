@@ -3,11 +3,19 @@
  *
  * Two families, with strict roles:
  * - **Fraunces** (serif) — headings, book titles, quotes. Sets the editorial tone.
- * - **Inter** (sans) — everything else in the UI: buttons, labels, body copy.
+ * - **Inter** (sans) — everything else: buttons, labels, body copy, micro text.
+ *
+ * Two properties of the scale are deliberate and load-bearing:
+ *
+ * 1. **Every `lineHeight` is a multiple of 4**, so text sits on the same
+ *    baseline grid as the spacing scale (`space` in `./spacing.ts`).
+ * 2. **The scale has gaps** — nothing between 17 and 21, nothing between 32
+ *    and 56. The reference set gets its character from refusing intermediate
+ *    sizes; filling the gaps in is what makes an interface look generic.
  *
  * The font names must match exactly the keys loaded in `useAppFonts`
- * (`src/theme/fonts.ts`), otherwise React Native silently falls back to the
- * system font, without an error.
+ * (`./fonts.ts`), otherwise React Native silently falls back to the system
+ * font, with no error.
  */
 
 import type { TextStyle } from 'react-native'
@@ -27,71 +35,96 @@ export const fontFamily = {
 /**
  * Styles ready to apply to `<Text>`. Prefer these over manually combining
  * `fontSize` + `fontFamily`, so the scale stays consistent.
+ *
+ * Pair each one with the matching preset from `./text.ts` — the type style
+ * sets how text *looks*, the text preset sets how it *fits*.
  */
 export const typography = {
-  /** Title of a large screen (Home, the result screen). */
-  displayLarge: {
+  /** Hero title. At most once per screen, and never over user-supplied text. */
+  displayHero: {
     fontFamily: fontFamily.displayBold,
-    fontSize: 34,
-    lineHeight: 41,
-    letterSpacing: -0.5,
+    fontSize: 56,
+    lineHeight: 60,
+    letterSpacing: -1.5,
   },
-  /** A book's title on the result screen. */
+  /** Screen title. */
+  displayLarge: {
+    fontFamily: fontFamily.displaySemiBold,
+    fontSize: 32,
+    lineHeight: 40,
+    letterSpacing: -0.6,
+  },
+  /** A book's title on the result screen — the subject of the page. */
   displayMedium: {
     fontFamily: fontFamily.displaySemiBold,
-    fontSize: 27,
-    lineHeight: 34,
-    letterSpacing: -0.3,
+    fontSize: 26,
+    lineHeight: 32,
+    letterSpacing: -0.4,
   },
-  /** Section titles ("Recommended for you"). */
+  /** Section heading ("How it works", "Recommended for you"). */
   displaySmall: {
     fontFamily: fontFamily.displaySemiBold,
     fontSize: 21,
     lineHeight: 28,
     letterSpacing: -0.2,
   },
-  /** A book's title in a list/card. */
+  /** A book's title in a list or card. */
   titleCard: {
     fontFamily: fontFamily.displayMedium,
     fontSize: 17,
-    lineHeight: 23,
+    lineHeight: 24,
   },
-  /** Body copy for summaries — generous lineHeight, meant for extended reading. */
+  /** Long-form prose: summaries, descriptions. Generous leading. */
   bodyReading: {
     fontFamily: fontFamily.bodyRegular,
     fontSize: 16,
-    lineHeight: 26,
+    lineHeight: 28,
   },
-  /** Standard UI body copy. */
+  /** Standard UI copy. */
   body: {
     fontFamily: fontFamily.bodyRegular,
     fontSize: 15,
-    lineHeight: 22,
+    lineHeight: 24,
+  },
+  /** Emphasis inside UI copy. */
+  bodyStrong: {
+    fontFamily: fontFamily.bodyMedium,
+    fontSize: 15,
+    lineHeight: 24,
   },
   /** Secondary text: author, metadata, help text under inputs. */
   caption: {
     fontFamily: fontFamily.bodyRegular,
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 20,
   },
   /** Button labels. */
   button: {
     fontFamily: fontFamily.bodySemiBold,
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 20,
+    letterSpacing: 0.3,
   },
-  /** Field labels and tab titles. */
+  /** Field labels. */
   label: {
     fontFamily: fontFamily.bodyMedium,
     fontSize: 13,
-    lineHeight: 17,
+    lineHeight: 16,
   },
-  /** Small, letter-spaced uppercase text — for eyebrows above headings. */
+  /** Uppercase eyebrow above a heading; chip and pill labels. */
   overline: {
     fontFamily: fontFamily.bodySemiBold,
     fontSize: 11,
-    lineHeight: 14,
-    letterSpacing: 1.1,
+    lineHeight: 16,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  /** The smallest voice: source attributions, tab labels, step indices. */
+  micro: {
+    fontFamily: fontFamily.bodyMedium,
+    fontSize: 10,
+    lineHeight: 12,
+    letterSpacing: 1.4,
     textTransform: 'uppercase',
   },
 } as const satisfies Record<string, TextStyle>
