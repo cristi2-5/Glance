@@ -105,6 +105,12 @@ class OpenLibrarySource:
     def _best_doc(self, docs: list[Any], title: str) -> dict[str, Any] | None:
         """Picks the search hit whose title best matches the query.
 
+        Ties between equally-titled editions are broken towards the one
+        carrying a cover, then towards Open Library's own ordering (a
+        strict `>` keeps the earliest of equals). Whether the *work* has a
+        description cannot be used here — that needs the second request,
+        which is only made once this choice is settled.
+
         Args:
             docs: The raw `docs` array from the search response.
             title: The title being looked for.
@@ -114,14 +120,14 @@ class OpenLibrarySource:
             similarity floor.
         """
         best: dict[str, Any] | None = None
-        best_score = MIN_TITLE_SIMILARITY
+        best_rank = (MIN_TITLE_SIMILARITY, -1)
 
         for doc in docs:
             if not isinstance(doc, dict) or not doc.get("title"):
                 continue
-            score = title_similarity(title, str(doc["title"]))
-            if score >= best_score:
-                best, best_score = doc, score
+            rank = (title_similarity(title, str(doc["title"])), 1 if doc.get("cover_i") else 0)
+            if rank > best_rank:
+                best, best_rank = doc, rank
 
         return best
 

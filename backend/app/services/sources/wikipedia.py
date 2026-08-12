@@ -176,7 +176,7 @@ class WikipediaSource:
 
         results = fetch.payload.get("query", {}).get("search", [])
         best: str | None = None
-        best_score = _MIN_TITLE_SIMILARITY
+        best_score = float("-inf")
 
         for entry in results:
             if not isinstance(entry, dict) or not entry.get("title"):
@@ -185,7 +185,12 @@ class WikipediaSource:
             # Strip the disambiguator — "Dune (novel)" should match "Dune".
             bare = re.sub(r"\s*\([^)]*\)\s*$", "", candidate)
             score = title_similarity(title, bare)
-            if score >= best_score:
+            if score < _MIN_TITLE_SIMILARITY:
+                continue
+            # Strict `>`: on equal scores keep the earliest, which is
+            # Wikipedia's own relevance ranking. `>=` handed ties to the
+            # last result instead, throwing that ranking away.
+            if score > best_score:
                 best, best_score = candidate, score
 
         if best is None:

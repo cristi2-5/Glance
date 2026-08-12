@@ -75,6 +75,18 @@ class GoogleBooksSource:
     def _best_volume(self, items: list[Any], title: str) -> dict[str, Any] | None:
         """Picks the returned volume whose title best matches the query.
 
+        Ties are common and used to be resolved badly. A popular novel has
+        several volumes whose titles all match perfectly — the novel, a
+        "A Novel" reissue, a literary-criticism study of it — and the old
+        `>=` comparison let the *last* of them win, silently discarding
+        Google's own relevance ranking. "Seraphina" resolved to a criticism
+        volume carrying no description at all, so the book cached with a
+        cover and nothing to read.
+
+        Ranking therefore goes: title similarity first, then whether the
+        volume actually carries a description, then Google's ordering (a
+        strict `>` keeps the earliest of equals).
+
         Args:
             items: The raw `items` array from the volumes response.
             title: The title being looked for.
@@ -84,7 +96,7 @@ class GoogleBooksSource:
             cleared `MIN_TITLE_SIMILARITY`.
         """
         best: dict[str, Any] | None = None
-        best_score = MIN_TITLE_SIMILARITY
+        best_rank = (MIN_TITLE_SIMILARITY, -1)
 
         for item in items:
             if not isinstance(item, dict):
@@ -97,9 +109,9 @@ class GoogleBooksSource:
             if info.get("subtitle"):
                 candidate = f"{candidate}: {info['subtitle']}"
 
-            score = title_similarity(title, candidate)
-            if score >= best_score:
-                best, best_score = info, score
+            rank = (title_similarity(title, candidate), 1 if info.get("description") else 0)
+            if rank > best_rank:
+                best, best_rank = info, rank
 
         return best
 

@@ -330,3 +330,98 @@ async def test_wikipedia_timeout_reports_unavailable() -> None:
         result = await source.fetch("Dune")
 
     assert result.available is False
+
+
+# --- Tie-breaking between equally-titled candidates --------------------------
+#
+# A popular novel returns several volumes whose titles all match perfectly:
+# the novel, an "A Novel" reissue, a literary-criticism study of it. The old
+# `>=` comparison let the *last* of them win, discarding the catalog's own
+# relevance ranking. Observed live: "Seraphina" resolved to a criticism
+# volume with no description, so the book cached with a cover and nothing
+# to read.
+
+
+async def test_google_books_prefers_a_described_volume_over_a_bare_tie() -> None:
+    payload = {
+        "items": [
+            {"volumeInfo": {"title": "Seraphina", "categories": ["Literary Criticism"]}},
+            {
+                "volumeInfo": {
+                    "title": "Seraphina",
+                    "description": "A kingdom of dragons and a half-dragon musician.",
+                    "categories": ["Fiction"],
+                }
+            },
+        ]
+    }
+    source = GoogleBooksSource(get_settings())
+
+    with respx.mock:
+        respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=payload))
+        result = await source.fetch("Seraphina", "Rachel Hartman")
+
+    assert result.metadata.description is not None
+    assert result.metadata.categories == ["Fiction"]
+    assert len(result.passages) == 1
+
+
+async def test_google_books_keeps_catalog_order_when_candidates_tie_exactly() -> None:
+    # Both carry a description and score identically, so Google's own
+    # relevance ranking decides — the first wins, not the last.
+    payload = {
+        "items": [
+            {"volumeInfo": {"title": "Dune", "description": "The novel."}},
+            {"volumeInfo": {"title": "Dune", "description": "A study guide."}},
+        ]
+    }
+    source = GoogleBooksSource(get_settings())
+
+    with respx.mock:
+        respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=payload))
+        result = await source.fetch("Dune", "Frank Herbert")
+
+    assert result.metadata.description == "The novel."
+
+
+async def test_google_books_similarity_still_outranks_richness() -> None:
+    # A described but wrong-titled volume must not beat the right book.
+    payload = {
+        "items": [
+            {"volumeInfo": {"title": "Dune", "categories": ["Fiction"]}},
+            {"volumeInfo": {"title": "Heretics of Dune", "description": "Book five."}},
+        ]
+    }
+    source = GoogleBooksSource(get_settings())
+
+    with respx.mock:
+        respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=payload))
+        result = await source.fetch("Dune", "Frank Herbert")
+
+    assert result.metadata.title == "Dune"
+    assert result.metadata.description is None
+
+
+async def test_open_library_prefers_a_hit_carrying_a_cover_on_a_tie() -> None:
+    search = {
+        "docs": [
+            {"key": "/works/OL1W", "title": "Seraphina", "author_name": ["Rachel Hartman"]},
+            {
+                "key": "/works/OL2W",
+                "title": "Seraphina",
+                "author_name": ["Rachel Hartman"],
+                "cover_i": 42,
+            },
+        ]
+    }
+    source = OpenLibrarySource(get_settings())
+
+    with respx.mock:
+        respx.get(_OL_SEARCH_URL).mock(return_value=httpx.Response(200, json=search))
+        respx.get("https://openlibrary.org/works/OL2W.json").mock(
+            return_value=httpx.Response(200, json={"description": "A half-dragon musician."})
+        )
+        result = await source.fetch("Seraphina", "Rachel Hartman")
+
+    assert result.metadata.cover_url is not None
+    assert result.url == "https://openlibrary.org/works/OL2W"
