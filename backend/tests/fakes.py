@@ -1,10 +1,12 @@
-"""Fake implementations of the vision-layer protocols, for fast, offline tests."""
+"""Fake implementations of the service protocols, for fast, offline tests."""
 
 from dataclasses import dataclass
 from typing import Any
 
+from app.models.book import SourceName
 from app.services.ocr_service import OcrEngine, TextCandidate
 from app.services.ollama_client import OllamaClient
+from app.services.sources.base import SourceResult
 from app.services.title_lookup import BookCandidate, LookupOutcome, TitleLookup
 
 
@@ -69,3 +71,32 @@ class FakeTitleLookup(TitleLookup):
     async def search(self, query: str, limit: int = 5) -> LookupOutcome:
         self.queries.append(query)
         return LookupOutcome(candidates=list(self.candidates), available=self.available)
+
+
+class FakeContentSource:
+    """`ContentSource` returning a scripted result and recording its calls.
+
+    Set `raises` to simulate a source that blows up rather than reporting
+    a failure — `BookDataFetcher` must contain that, not propagate it.
+    """
+
+    def __init__(
+        self,
+        source: SourceName,
+        result: SourceResult | None = None,
+        raises: Exception | None = None,
+    ) -> None:
+        self._name = source
+        self._result = result if result is not None else SourceResult.no_match(source)
+        self._raises = raises
+        self.calls: list[tuple[str, str | None]] = []
+
+    @property
+    def name(self) -> SourceName:
+        return self._name
+
+    async def fetch(self, title: str, author: str | None = None) -> SourceResult:
+        self.calls.append((title, author))
+        if self._raises is not None:
+            raise self._raises
+        return self._result

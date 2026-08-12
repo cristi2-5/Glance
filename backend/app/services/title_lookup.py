@@ -14,22 +14,19 @@ treat the second as evidence of anything, so `LookupOutcome` carries an
 `available` flag alongside the candidates.
 """
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-import httpx
 import structlog
 from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
+from app.services.http_utils import get_json_with_retry
 
 logger = structlog.get_logger(__name__)
 
 _GOOGLE_BOOKS_VOLUMES_URL = "https://www.googleapis.com/books/v1/volumes"
 _OPEN_LIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
-
-_RETRY_BACKOFF_SECONDS = 0.4
 
 
 async def _get_json_with_retry(
@@ -41,10 +38,11 @@ async def _get_json_with_retry(
 ) -> dict[str, Any] | None:
     """GETs a JSON document, retrying transient failures.
 
-    Retries server errors (5xx) and connection/timeout failures, which for
-    Google Books are common and clear on an immediate retry. Client errors
-    are *not* retried: a 429 quota refusal or a rejected key will answer the
-    same way however many times it is asked.
+    Thin adapter over `http_utils.get_json_with_retry`, kept because this
+    module's callers only need "usable payload or nothing" — a catalog
+    with no such volume and a catalog that refused to answer both lower
+    confidence the same way here. Module 4 needs the finer distinction and
+    uses the shared helper directly.
 
     Args:
         url: The endpoint to query.
@@ -54,46 +52,13 @@ async def _get_json_with_retry(
         source: Short label used in log events.
 
     Returns:
-        The decoded JSON body, or `None` if the catalog could not be reached.
+        The decoded JSON body, or `None` if the catalog gave us nothing.
     """
-    attempts = max_retries + 1
-
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        for attempt in range(1, attempts + 1):
-            try:
-                response = await client.get(url, params=params)
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                logger.warning(
-                    "catalog_request_failed", source=source, attempt=attempt, error=str(exc)
-                )
-            else:
-                if response.is_success:
-                    try:
-                        payload: dict[str, Any] = response.json()
-                        return payload
-                    except ValueError as exc:
-                        logger.warning("catalog_bad_json", source=source, error=str(exc))
-                        return None
-
-                if response.status_code < 500:
-                    logger.warning(
-                        "catalog_request_refused",
-                        source=source,
-                        status=response.status_code,
-                    )
-                    return None
-
-                logger.warning(
-                    "catalog_request_transient_error",
-                    source=source,
-                    attempt=attempt,
-                    status=response.status_code,
-                )
-
-            if attempt < attempts:
-                await asyncio.sleep(_RETRY_BACKOFF_SECONDS * attempt)
-
-    return None
+    fetch = await get_json_with_retry(
+        url, params, timeout=timeout, max_retries=max_retries, source=source
+    )
+    payload: dict[str, Any] | None = fetch.payload
+    return payload
 
 
 class BookCandidate(BaseModel):

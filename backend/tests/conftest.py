@@ -7,19 +7,24 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.api.deps import build_vision_service
+from app.api.deps import build_data_fetcher, build_vision_service
 from app.core.config import get_settings
 from app.db.session import Base, get_db, get_session_factory
 from app.main import app
 from app.models import (  # noqa: F401  (registers the models on Base.metadata)
+    Book,
     Job,
     RefreshToken,
+    TextSource,
     User,
 )
+from app.models.book import SourceKind, SourceName
+from app.services.data_fetcher import BookDataFetcher
 from app.services.ocr_service import OcrService, TextCandidate
+from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
 from app.services.title_lookup import BookCandidate
 from app.services.vision_service import VisionService
-from tests.fakes import FakeOcrEngine, FakeOllamaClient, FakeTitleLookup
+from tests.fakes import FakeContentSource, FakeOcrEngine, FakeOllamaClient, FakeTitleLookup
 
 
 def _build_fake_vision_service() -> VisionService:
@@ -40,6 +45,39 @@ def _build_fake_vision_service() -> VisionService:
     ollama = FakeOllamaClient()
     lookup = FakeTitleLookup([BookCandidate(title="Dune", authors=["Frank Herbert"])])
     return VisionService(ocr=ocr, ollama=ollama, lookup=lookup, settings=get_settings())
+
+
+def _build_fake_data_fetcher() -> BookDataFetcher:
+    """A `BookDataFetcher` over scripted sources, for the HTTP test suite.
+
+    The background task started by `POST /books/analyze-cover` runs for
+    real under `ASGITransport`, so without this override every job test
+    would reach out to Google Books, Open Library and Wikipedia. Scripted
+    to match the fake vision service's "Dune".
+    """
+    google = FakeContentSource(
+        SourceName.GOOGLE_BOOKS,
+        SourceResult(
+            source=SourceName.GOOGLE_BOOKS,
+            metadata=BookMetadata(
+                title="Dune",
+                author="Frank Herbert",
+                description="A desert planet, a spice, an empire.",
+                categories=["Fiction"],
+                cover_url="https://example.test/dune.jpg",
+                average_rating=4.5,
+                ratings_count=120,
+            ),
+            passages=[
+                SourcePassage(
+                    kind=SourceKind.DESCRIPTION,
+                    content="A desert planet, a spice, an empire.",
+                )
+            ],
+            url="https://example.test/dune",
+        ),
+    )
+    return BookDataFetcher(sources=[google], settings=get_settings())
 
 
 @pytest.fixture
@@ -82,6 +120,7 @@ async def client(
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_session_factory] = lambda: db_session_factory
     app.dependency_overrides[build_vision_service] = _build_fake_vision_service
+    app.dependency_overrides[build_data_fetcher] = _build_fake_data_fetcher
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

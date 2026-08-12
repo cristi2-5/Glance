@@ -1,0 +1,340 @@
+"""Lazy, per-book fetching and caching of everything known about a book.
+
+The entry point is `BookDataFetcher.fetch`, called with the `{title,
+author}` the vision step produced. It is **on demand and per book**: only
+the title just scanned is ever fetched, and the database is never
+pre-populated with unrelated works.
+
+The flow:
+
+1. Look the book up in SQLite by a normalized title+author key. A fresh
+   hit (metadata present and text sources within the TTL) returns
+   immediately, with no external call at all.
+2. On a miss, query the three official sources — Google Books, Open
+   Library, Wikipedia — merge them, and persist the result.
+3. Return the book either way.
+
+Nothing in step 2 is allowed to fail the request. A source that times
+out, refuses, or simply has no such book is recorded as absent and the
+rest of the result is returned regardless: no catalog match yields a
+`metadata_found=False` book carrying just the vision-derived title, and
+no Wikipedia article yields an empty passage list. The client renders
+those states; it never sees a 500 because an external site was slow.
+
+The one thing an outage must *not* do is get cached. `SourceResult`
+separates "reached it, no such book" from "could not reach it", and only
+the former is persisted as a settled answer — otherwise a transient 503
+would pin an empty entry in SQLite for the entire TTL.
+"""
+
+import asyncio
+import unicodedata
+from datetime import datetime, timedelta
+
+import structlog
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import Settings, get_settings
+from app.models.book import Book, TextSource
+from app.services.sources.base import BookMetadata, ContentSource, SourceResult
+from app.services.sources.google_books import GoogleBooksSource
+from app.services.sources.open_library import OpenLibrarySource
+from app.services.sources.wikipedia import WikipediaSource
+
+logger = structlog.get_logger(__name__)
+
+
+def normalize_key(title: str, author: str | None = None) -> str:
+    """Builds the cache key for a title+author pair.
+
+    Case, accents, punctuation and surrounding articles vary between what
+    the vision model reads off a cover and what a catalog stores, so the
+    raw strings make a poor key: "DUNE"/"Dune" and "Cărțile"/"Cartile"
+    would each cache twice and re-fetch forever. Folding all of that away
+    gives one stable entry per book.
+
+    Args:
+        title: The book title.
+        author: The author, when known.
+
+    Returns:
+        A `"title|author"` key, accent- and case-folded, with runs of
+        non-alphanumeric characters collapsed to single spaces.
+    """
+    return f"{_fold(title)}|{_fold(author or '')}"
+
+
+def _fold(value: str) -> str:
+    """Case-folds, strips accents, and collapses punctuation in a string.
+
+    Args:
+        value: The string to normalize.
+
+    Returns:
+        The folded form, or an empty string for empty input.
+    """
+    decomposed = unicodedata.normalize("NFKD", value)
+    without_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in without_accents.casefold())
+    return " ".join(cleaned.split())
+
+
+class BookDataFetcher:
+    """Fetches and caches book metadata and prose from the official sources.
+
+    Sources are injected rather than constructed, so tests can supply
+    fakes and the production wiring lives in one factory
+    (`build_data_fetcher`).
+    """
+
+    def __init__(self, sources: list[ContentSource], settings: Settings) -> None:
+        self._sources = sources
+        self._ttl = timedelta(days=settings.book_cache_ttl_days)
+
+    async def fetch(self, db: AsyncSession, title: str, author: str | None = None) -> Book:
+        """Returns the cached book, fetching it from the sources on a miss.
+
+        Args:
+            db: The database session to read and write through.
+            title: The title recognized from the cover.
+            author: The author recognized from the cover, when any.
+
+        Returns:
+            The persisted `Book`, with its `text_sources` loaded. Check
+            `metadata_found` to tell a catalogued book from one carrying
+            only the vision-derived title.
+        """
+        key = normalize_key(title, author)
+        book = await self._load_cached(db, key)
+
+        if book is not None and self._is_fresh(book):
+            logger.info("book_cache_hit", key=key, book_id=book.id)
+            return book
+
+        logger.info("book_cache_miss", key=key, refreshing=book is not None)
+        results = await self._gather(title, author)
+        return await self._persist(db, key, title, author, results, existing=book)
+
+    async def _load_cached(self, db: AsyncSession, key: str) -> Book | None:
+        """Loads a cached book by its normalized key.
+
+        Args:
+            db: The database session.
+            key: The normalized title+author key.
+
+        Returns:
+            The cached `Book`, or `None` if it has never been fetched.
+        """
+        result = await db.execute(select(Book).where(Book.normalized_key == key))
+        return result.scalar_one_or_none()
+
+    def _is_fresh(self, book: Book) -> bool:
+        """Decides whether a cached book can be served without re-fetching.
+
+        A book whose sources have never been gathered is never fresh, even
+        if the row exists — that is the half-populated state left by an
+        earlier outage, and it should be retried rather than served.
+
+        Args:
+            book: The cached book.
+
+        Returns:
+            `True` when the entry is complete and within the TTL.
+        """
+        if book.sources_fetched_at is None:
+            return False
+        return datetime.utcnow() - book.sources_fetched_at < self._ttl
+
+    async def _gather(self, title: str, author: str | None) -> list[SourceResult]:
+        """Queries every source concurrently.
+
+        The sources are independent and each already bounded by its own
+        timeout, so running them together costs one round trip instead of
+        three — which matters on a pipeline the user is waiting on.
+
+        Args:
+            title: The book title.
+            author: The author, when known.
+
+        Returns:
+            One `SourceResult` per source, in source-priority order. A
+            source that raised unexpectedly is reported as unavailable
+            rather than propagating.
+        """
+        gathered = await asyncio.gather(
+            *(source.fetch(title, author) for source in self._sources),
+            return_exceptions=True,
+        )
+
+        results: list[SourceResult] = []
+        for source, outcome in zip(self._sources, gathered, strict=True):
+            if isinstance(outcome, BaseException):
+                # A source raising is a bug in that source, not a reason to
+                # fail the scan — the others may still have everything.
+                logger.exception(
+                    "content_source_raised", source=source.name.value, error=str(outcome)
+                )
+                results.append(SourceResult.unavailable(source.name))
+            else:
+                results.append(outcome)
+        return results
+
+    async def _persist(
+        self,
+        db: AsyncSession,
+        key: str,
+        title: str,
+        author: str | None,
+        results: list[SourceResult],
+        existing: Book | None,
+    ) -> Book:
+        """Merges the source results into the cache and commits.
+
+        Args:
+            db: The database session.
+            key: The normalized cache key.
+            title: The vision-derived title, used when no catalog matched.
+            author: The vision-derived author, likewise.
+            results: What each source returned.
+            existing: The stale row being refreshed, if there was one.
+
+        Returns:
+            The persisted `Book`.
+        """
+        matched = [result for result in results if result.matched]
+        metadata = _merge_metadata(matched)
+
+        book = existing or Book(normalized_key=key)
+        # Catalog spellings are canonical, but never let a source blank out
+        # what the cover told us.
+        book.title = metadata.title or title
+        book.author = metadata.author or author
+        book.description = metadata.description
+        book.categories = metadata.categories or None
+        book.cover_url = metadata.cover_url
+        book.isbn_13 = metadata.isbn_13
+        book.isbn_10 = metadata.isbn_10
+        book.average_rating = metadata.average_rating
+        book.ratings_count = metadata.ratings_count
+        book.metadata_found = bool(matched)
+
+        passages = [
+            TextSource(
+                source=result.source.value,
+                kind=passage.kind.value,
+                heading=passage.heading,
+                content=passage.content,
+                url=result.url,
+                license=result.license,
+            )
+            for result in matched
+            for passage in result.passages
+        ]
+
+        # Replace the collection wholesale rather than appending, so a
+        # refresh after the TTL expires does not accumulate a second copy
+        # of the same article's passages. `delete-orphan` drops the old rows.
+        #
+        # Both branches assign without reading the collection first: a new
+        # Book is still transient here, and a refreshed one was loaded
+        # eagerly (`lazy="selectin"`) by `_load_cached`. Touching it in any
+        # way that needs a load would emit IO from sync context, which
+        # async SQLAlchemy cannot do.
+        if existing is None:
+            book.text_sources = passages
+            db.add(book)
+        else:
+            book.text_sources[:] = passages
+
+        await db.flush()
+
+        # Only settle the TTL if at least one source actually answered.
+        # If every source was unreachable, leave the timestamp untouched so
+        # the next scan retries instead of serving an empty entry for a month.
+        if any(result.available for result in results):
+            book.sources_fetched_at = datetime.utcnow()
+        else:
+            logger.warning("all_content_sources_unavailable", key=key, title=title)
+
+        # Read the count before committing. The session is configured with
+        # `expire_on_commit=False`, so the collection stays loaded — but
+        # reading it after a commit that expired anything would trigger a
+        # lazy load from sync context, which async SQLAlchemy cannot do.
+        passage_count = len(book.text_sources)
+        await db.commit()
+
+        logger.info(
+            "book_cached",
+            key=key,
+            book_id=book.id,
+            metadata_found=book.metadata_found,
+            passages=passage_count,
+            sources_matched=[result.source.value for result in matched],
+        )
+        return book
+
+
+def _merge_metadata(results: list[SourceResult]) -> BookMetadata:
+    """Merges per-source metadata, first non-empty value winning.
+
+    `results` arrives in source-priority order, so Google Books' richer
+    catalog fields take precedence and Open Library fills the gaps.
+    Categories are the exception: the two taxonomies complement each
+    other, so they are unioned rather than overwritten.
+
+    Args:
+        results: The results of the sources that matched the book.
+
+    Returns:
+        The merged metadata.
+    """
+    merged = BookMetadata()
+    categories: list[str] = []
+
+    for result in results:
+        source_meta = result.metadata
+        for label in source_meta.categories:
+            if label not in categories:
+                categories.append(label)
+
+        merged = BookMetadata(
+            title=merged.title or source_meta.title,
+            author=merged.author or source_meta.author,
+            description=merged.description or source_meta.description,
+            categories=categories,
+            cover_url=merged.cover_url or source_meta.cover_url,
+            isbn_13=merged.isbn_13 or source_meta.isbn_13,
+            isbn_10=merged.isbn_10 or source_meta.isbn_10,
+            average_rating=(
+                merged.average_rating
+                if merged.average_rating is not None
+                else source_meta.average_rating
+            ),
+            ratings_count=(
+                merged.ratings_count
+                if merged.ratings_count is not None
+                else source_meta.ratings_count
+            ),
+        )
+
+    return merged
+
+
+def build_data_fetcher() -> BookDataFetcher:
+    """Factory for the production `BookDataFetcher`.
+
+    Returns:
+        A fetcher over the three official sources, in priority order:
+        Google Books (richest metadata), Open Library (CC0 gap-filler),
+        Wikipedia (the critical-reception corpus).
+    """
+    settings = get_settings()
+    return BookDataFetcher(
+        sources=[
+            GoogleBooksSource(settings),
+            OpenLibrarySource(settings),
+            WikipediaSource(settings),
+        ],
+        settings=settings,
+    )

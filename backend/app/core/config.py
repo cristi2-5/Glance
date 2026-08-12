@@ -101,6 +101,23 @@ class Settings(BaseSettings):
     # failures only (5xx, timeouts) — a 429 quota refusal is not retried.
     catalog_max_retries: int = 2
 
+    # Content sources / cache (Module 4)
+    #
+    # Only official APIs are used — see the "Content sources" decision in
+    # CLAUDE.md for why no review site is scraped. Wikipedia's API policy
+    # requires a descriptive User-Agent identifying the app and a contact
+    # point; requests without one are throttled or refused.
+    source_user_agent: str = "Glance/0.1 (book summary app; cristian.stoian2005@gmail.com)"
+    wikipedia_timeout_seconds: float = 10.0
+    wikipedia_language: str = "en"
+    # How long a cached book stays fresh before its sources are re-fetched.
+    # Book metadata and critical reception change on the scale of months,
+    # so a long TTL costs nothing and keeps repeat scans instant.
+    book_cache_ttl_days: int = 30
+    # Guards against a pathological Wikipedia article filling SQLite; well
+    # above any real Reception section.
+    source_max_passage_chars: int = 20_000
+
     # Vision (Module 3)
     image_max_edge_px: int = 768
     image_jpeg_quality: int = 85

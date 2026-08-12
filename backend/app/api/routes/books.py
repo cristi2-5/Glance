@@ -4,7 +4,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, File, UploadFile, status
 
-from app.api.deps import CurrentUser, DbSession, SessionFactory, VisionServiceDep
+from app.api.deps import (
+    CurrentUser,
+    DataFetcherDep,
+    DbSession,
+    SessionFactory,
+    VisionServiceDep,
+)
 from app.core.config import get_settings
 from app.core.exceptions import FileTooLarge, UnsupportedFileType
 from app.models.job import Job, JobStatus
@@ -51,6 +57,7 @@ async def analyze_cover(
     session_factory: SessionFactory,
     current_user: CurrentUser,
     vision_service: VisionServiceDep,
+    data_fetcher: DataFetcherDep,
     file: Annotated[UploadFile, File()],
 ) -> JobCreated:
     """Receives a photo of a book cover and starts the asynchronous analysis.
@@ -65,6 +72,8 @@ async def analyze_cover(
         session_factory: The session factory passed to the background task.
         current_user: The authenticated user, owner of the job.
         vision_service: The vision service used to identify the cover.
+        data_fetcher: The metadata/source fetcher used once the cover is
+            recognized.
         file: The cover image (JPEG, PNG, or HEIC/HEIF, max 8 MB).
 
     Returns:
@@ -81,5 +90,7 @@ async def analyze_cover(
     await db.commit()
     await db.refresh(job)
 
-    background_tasks.add_task(process_cover, job.id, content, session_factory, vision_service)
+    background_tasks.add_task(
+        process_cover, job.id, content, session_factory, vision_service, data_fetcher
+    )
     return JobCreated(job_id=job.id)

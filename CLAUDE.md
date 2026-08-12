@@ -81,6 +81,19 @@ Reason: with Groq now the default (see the "Architecture pivot" decision above),
 
 All of them implement a common `ContentSource` `Protocol`. There is also a `ScraperSource` **defined but not implemented**, as an extension point. No scraping is written without an explicit request.
 
+**Review scraping was evaluated during Module 4 and rejected on evidence.** The question was which single review site to scrape 10-15 reviews from, per book, respecting robots.txt. Checking the actual `robots.txt` of each candidate showed the two requirements are mutually exclusive:
+
+| Site | `User-agent: *` posture on review pages |
+|---|---|
+| Goodreads | `Disallow: /book/reviews/`, `/review/show`, `/review/list` — precisely the review paths. API retired Dec 2020, no new keys issued. |
+| LibraryThing | Review sections disallowed; only `/work/*/main` and `/author/*/main` allowed. `Crawl-delay: 2`, `Content-signal: ai-train=no`. |
+| Amazon | `Disallow: /product-reviews/`; ToS prohibits automated access outright. |
+| The StoryGraph | The only one not blocking review paths, but: `Content-Signal: ai-train=no, use=reference`, no public API, named AI crawlers all `Disallow: /`, and user-owned review text with unclear licence for resurfacing in generated summaries. |
+
+So no source permits it. **Wikipedia's Reception sections are the critical-opinion corpus instead** — and for RAG they are the better input anyway: professional criticism with citations, rather than user reviews that are mostly star ratings and one-liners. Its cost is coverage, not licensing: only notable books have articles, and Romanian editions rarely do. That is handled as a normal, non-fatal outcome (fewer passages), not an error.
+
+Consequence for the schema: there is **no `reviews` table**. `TextSource` holds every passage — description, subjects, plot, reception — tagged with `source`, `kind`, `url` and `license`, so Module 5 can cite what it retrieved and honour per-source attribution.
+
 ### Dual-purpose embeddings
 
 The vectors generated when a book is ingested serve both RAG (Module 5) and recommendations (Module 6). We don't build two embedding pipelines.
@@ -146,11 +159,12 @@ backend/
 │   │   ├── vision_service.py       # OCR-first, vision-model fallback (Groq or Ollama)
 │   │   ├── ollama_client.py        # local backend: shared wrapper with timeout/retry
 │   │   ├── groq_client.py          # cloud backend (default): shared wrapper, retry, provider switch
+│   │   ├── http_utils.py           # shared GET+retry policy for every external source
 │   │   ├── sources/
-│   │   │   ├── base.py             # ContentSource Protocol
-│   │   │   ├── google_books.py
-│   │   │   ├── open_library.py
-│   │   │   └── wikipedia.py
+│   │   │   ├── base.py             # ContentSource Protocol, SourceResult
+│   │   │   ├── google_books.py     # metadata: description, categories, ISBN, rating
+│   │   │   ├── open_library.py     # CC0 gap-filler: subjects, description
+│   │   │   └── wikipedia.py        # plot + Reception — the critical-opinion corpus
 │   │   ├── data_fetcher.py         # source orchestration + normalization + cache
 │   │   ├── rag_service.py          # chunking, embeddings, Chroma, synthesis
 │   │   └── recommendation_service.py
@@ -182,8 +196,8 @@ One module per session. Don't move on until the tests pass.
       *Done when:* a fake job goes through `pending → running → done` and is visible only to its owner. See `backend/docs/module-2-schelet-api.md` (local, gitignored).
 - [x] **Module 3: Vision** — Pillow preprocessing (EXIF rotation, resize 768 px, JPEG q85), RapidOCR, `OllamaClient`, Moondream fallback with `{title, author, confidence}` output, manual-correction endpoint (`PATCH /jobs/{id}/correction`).
       *Done when:* tests with a fake Ollama client + one `@pytest.mark.slow` test on 3 real covers from `tests/fixtures/covers/` (fixture images still pending — each test case skips individually until supplied). See `backend/docs/module-3-vision.md` (local, gitignored).
-- [ ] **Module 4: Data fetcher & cache** — the three official sources, title+author normalization with `rapidfuzz`, `Book` + `TextSource` models, TTL cache.
-      *Done when:* all HTTP mocked with `respx`, zero network calls in the suite.
+- [x] **Module 4: Data fetcher & cache** — the three official sources behind `ContentSource`, title+author normalization (accent/case folding for the cache key, `rapidfuzz` similarity floors so a misread cover can't match the wrong book), `Book` + `TextSource` models, TTL cache, lazy per-book fetching wired into `cover_pipeline`.
+      *Done when:* all HTTP mocked with `respx`, zero network calls in the suite. **Done** — 114 tests green, `mypy app/` clean, `ruff`/`black` clean. See `backend/docs/module-4-data-fetcher.md` (local, gitignored).
 - [ ] **Module 5: RAG** — chunking (~500 tokens, overlap 50), embeddings, persistent Chroma, **retrieval mandatorily filtered on `book_id`**, synthesis with Llama 3.2 + source citations, anti-hallucination prompt.
       *Done when:* on a fixture corpus, every statement in the summary is traceable to a chunk.
 - [ ] **Module 6: Recommendations** — `ReadingHistory`, `Preference`, profile vector (weighted average by user rating), candidate generation from Chroma, filtering by genre and already-read books, score + explanation ("because you liked X"). Purely content-based — single user, guaranteed cold start, no collaborative filtering.

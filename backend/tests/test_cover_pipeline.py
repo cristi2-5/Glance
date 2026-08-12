@@ -2,10 +2,15 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import get_settings
 from app.core.exceptions import CoverNotRecognized
+from app.models.book import SourceKind, SourceName
 from app.models.job import Job, JobStatus
 from app.schemas.vision import CoverIdentification
+from app.services.data_fetcher import BookDataFetcher
+from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
 from app.workers.cover_pipeline import process_cover
+from tests.fakes import FakeContentSource
 
 
 class _FakeVisionService:
@@ -93,3 +98,109 @@ async def test_process_cover_marks_job_failed_on_unexpected_error(
         assert job is not None
         assert job.status == JobStatus.FAILED.value
         assert job.error is not None
+
+
+# --- Module 4: the data-fetching stage --------------------------------------
+
+
+def _identified_dune() -> _FakeVisionService:
+    """A vision service that always recognizes Dune."""
+    return _FakeVisionService(
+        identification=CoverIdentification(
+            title="Dune",
+            author="Frank Herbert",
+            confidence=0.95,
+            method="ocr",
+            needs_review=False,
+        )
+    )
+
+
+async def test_process_cover_enriches_the_result_with_fetched_metadata(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    job_id = await _create_pending_job(db_session_factory)
+    fetcher = BookDataFetcher(
+        sources=[
+            FakeContentSource(
+                SourceName.GOOGLE_BOOKS,
+                SourceResult(
+                    source=SourceName.GOOGLE_BOOKS,
+                    metadata=BookMetadata(
+                        title="Dune",
+                        author="Frank Herbert",
+                        description="A desert planet.",
+                        categories=["Fiction"],
+                        cover_url="https://books.test/dune.jpg",
+                        average_rating=4.5,
+                    ),
+                    passages=[
+                        SourcePassage(kind=SourceKind.DESCRIPTION, content="A desert planet.")
+                    ],
+                ),
+            )
+        ],
+        settings=get_settings(),
+    )
+
+    await process_cover(
+        job_id, b"fake-image-bytes", db_session_factory, _identified_dune(), fetcher  # type: ignore[arg-type]
+    )
+
+    async with db_session_factory() as db:
+        job = await db.get(Job, job_id)
+        assert job is not None and job.result is not None
+        assert job.status == JobStatus.DONE.value
+        assert job.result["metadata_found"] is True
+        assert job.result["description"] == "A desert planet."
+        assert job.result["cover_url"] == "https://books.test/dune.jpg"
+        assert job.result["categories"] == ["Fiction"]
+        assert job.result["average_rating"] == 4.5
+        assert job.result["book_id"] is not None
+        assert job.result["source_count"] == 1
+
+
+async def test_process_cover_completes_when_no_catalog_matched(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # The "metadata not found" state: the job must still succeed, carrying
+    # the vision reading and a flag the client can render.
+    job_id = await _create_pending_job(db_session_factory)
+    fetcher = BookDataFetcher(
+        sources=[FakeContentSource(SourceName.GOOGLE_BOOKS)], settings=get_settings()
+    )
+
+    await process_cover(
+        job_id, b"fake-image-bytes", db_session_factory, _identified_dune(), fetcher  # type: ignore[arg-type]
+    )
+
+    async with db_session_factory() as db:
+        job = await db.get(Job, job_id)
+        assert job is not None and job.result is not None
+        assert job.status == JobStatus.DONE.value
+        assert job.result["metadata_found"] is False
+        assert job.result["description"] is None
+        assert job.result["title"] == "Dune", "vision reading is preserved"
+        assert job.error is None
+
+
+async def test_process_cover_survives_a_data_fetcher_that_explodes(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # A metadata failure must never fail a job whose cover was recognized.
+    class _ExplodingFetcher:
+        async def fetch(self, db: AsyncSession, title: str, author: str | None = None) -> None:
+            raise RuntimeError("database on fire")
+
+    job_id = await _create_pending_job(db_session_factory)
+
+    await process_cover(
+        job_id, b"fake-image-bytes", db_session_factory, _identified_dune(), _ExplodingFetcher()  # type: ignore[arg-type]
+    )
+
+    async with db_session_factory() as db:
+        job = await db.get(Job, job_id)
+        assert job is not None and job.result is not None
+        assert job.status == JobStatus.DONE.value
+        assert job.result["title"] == "Dune"
+        assert job.result["metadata_found"] is False
