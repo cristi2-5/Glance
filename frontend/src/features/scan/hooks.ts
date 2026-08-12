@@ -63,8 +63,15 @@ export function useJob(jobId: number | null) {
  * Applies a manual title/author correction to a job's result.
  *
  * On success, writes the updated job straight into the `['job', jobId]`
- * cache entry — the result screen reflects the correction immediately,
- * with no refetch (and no risk of restarting polling).
+ * cache entry, so the result screen reflects the correction immediately
+ * with no refetch.
+ *
+ * The backend returns that job in `running`, not `done`: a correction
+ * usually means the wrong book was recognized, so it discards the metadata
+ * fetched for the old title and re-fetches for the new one in the
+ * background. Writing a `running` job into the cache is what makes
+ * `useJob`'s `refetchInterval` resume polling — which is the intended
+ * behaviour here, not an accident to guard against.
  */
 export function useCorrectJob(jobId: number) {
   const queryClient = useQueryClient()

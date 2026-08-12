@@ -66,10 +66,10 @@ export interface JobPublic {
 /**
  * The result of analyzing a cover.
  *
- * Modules 4-5 still populate `summary`, `cover_url`, `categories`,
- * `average_rating`, and `reviews` as `null`/empty. The type is defined now,
- * and the mocks respect it, so the screens don't change when that data
- * arrives.
+ * Vision (Module 3) fills the recognition fields; the data fetcher
+ * (Module 4) fills the catalog ones. `summary` and `reviews` stay
+ * `null`/empty until Module 5 — the type carries them now, and the mocks
+ * respect it, so the screens don't change when that data arrives.
  */
 export interface AnalysisResult {
   title: string
@@ -83,10 +83,36 @@ export interface AnalysisResult {
   needs_review: boolean
   /** `true` once the user has overridden the recognized title/author by hand. */
   corrected: boolean
-  summary: string | null
+
+  /** The cached `books.id` row, or `null` if the fetch stage was skipped. */
+  book_id: number | null
+  /**
+   * `false` when no catalog matched the scanned cover.
+   *
+   * This is a normal outcome, not an error: `title` and `author` are then
+   * the vision reading and every catalog field below is empty. Common for
+   * Romanian editions, which Google Books and Open Library cover poorly.
+   * The screen says so plainly rather than showing a blank page.
+   */
+  metadata_found: boolean
+  /** The publisher's blurb from the catalog. Not the RAG summary. */
+  description: string | null
   cover_url: string | null
   categories: string[]
   average_rating: number | null
+  /** How many ratings `average_rating` averages — a 4.5 from 3 people is
+   * not a 4.5 from 3,000, and the screen shows the count for that reason. */
+  ratings_count: number | null
+  /**
+   * How many source passages were cached for this book (descriptions,
+   * subjects, plot, reception). Module 5 retrieves over exactly these, so
+   * a `0` here means a summary will have nothing to work from.
+   */
+  source_count: number
+
+  /** The RAG summary. `null` until Module 5. */
+  summary: string | null
+  /** Cited excerpts backing the summary. Empty until Module 5. */
   reviews: SourceReview[]
 }
 

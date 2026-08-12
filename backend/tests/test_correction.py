@@ -134,3 +134,62 @@ async def test_correction_without_authentication_is_rejected(client: AsyncClient
     )
 
     assert response.status_code == 401
+
+
+# --- Module 4: correcting a title invalidates the fetched metadata ----------
+
+
+async def test_correction_immediately_discards_the_previous_books_metadata(
+    client: AsyncClient,
+) -> None:
+    # A correction usually means the wrong book was recognized, so the
+    # cover, blurb and rating fetched for it describe something the user
+    # isn't holding. They must be gone from the very first response —
+    # rendering another book's cover under a corrected title is worse than
+    # rendering nothing.
+    token = await _register_and_login(client, EMAIL_A)
+    job_id = await _create_done_job(client, token)
+
+    before = await client.get(f"/jobs/{job_id}", headers=_auth_header(token))
+    assert before.json()["result"]["cover_url"] is not None, "fixture should start with metadata"
+
+    response = await client.patch(
+        f"/jobs/{job_id}/correction",
+        headers=_auth_header(token),
+        json={"title": "The Left Hand of Darkness", "author": "Ursula K. Le Guin"},
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "running", "the client keeps polling while metadata is re-fetched"
+    assert body["result"]["cover_url"] is None
+    assert body["result"]["description"] is None
+    assert body["result"]["categories"] == []
+    assert body["result"]["average_rating"] is None
+    assert body["result"]["metadata_found"] is False
+
+
+async def test_correction_refetches_and_completes_the_job(client: AsyncClient) -> None:
+    token = await _register_and_login(client, EMAIL_A)
+    job_id = await _create_done_job(client, token)
+
+    await client.patch(
+        f"/jobs/{job_id}/correction",
+        headers=_auth_header(token),
+        json={"title": "The Left Hand of Darkness", "author": "Ursula K. Le Guin"},
+    )
+
+    # The background task runs within the ASGI call, so by the time the
+    # next request is served the re-fetch has finished.
+    after = await client.get(f"/jobs/{job_id}", headers=_auth_header(token))
+    result = after.json()["result"]
+
+    assert after.json()["status"] == "done"
+    assert result["metadata_found"] is True, "metadata was re-fetched for the corrected title"
+    assert result["cover_url"] is not None
+    # The corrected title survives the re-fetch: the catalog's spelling
+    # must never overwrite what the user typed by hand.
+    assert result["title"] == "The Left Hand of Darkness"
+    assert result["author"] == "Ursula K. Le Guin"
+    assert result["corrected"] is True
+    assert result["method"] == "manual"

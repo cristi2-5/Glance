@@ -73,41 +73,105 @@ async def process_cover(
             await db.commit()
             return
 
-        result: dict[str, Any] = {
-            **identification.model_dump(),
-            "summary": None,
-            "book_id": None,
-            "metadata_found": False,
-            "description": None,
-            "cover_url": None,
-            "categories": [],
-            "average_rating": None,
-            "ratings_count": None,
-            "source_count": 0,
-        }
+        result: dict[str, Any] = {**identification.model_dump(), **EMPTY_BOOK_FIELDS}
 
         book = await _fetch_book_data(
             db, data_fetcher, job_id, identification.title, identification.author
         )
         if book is not None:
-            result.update(
-                {
-                    "title": book.title,
-                    "author": book.author,
-                    "book_id": book.id,
-                    "metadata_found": book.metadata_found,
-                    "description": book.description,
-                    "cover_url": book.cover_url,
-                    "categories": book.categories or [],
-                    "average_rating": book.average_rating,
-                    "ratings_count": book.ratings_count,
-                    "source_count": len(book.text_sources),
-                }
-            )
+            result.update(book_fields(book))
 
         job.result = result
         job.status = JobStatus.DONE.value
         await db.commit()
+
+
+async def refresh_book_data(
+    job_id: int,
+    title: str,
+    author: str | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    data_fetcher: BookDataFetcher,
+) -> None:
+    """Re-fetches a corrected job's book data and completes the job.
+
+    Runs after `PATCH /jobs/{id}/correction`. When the user overrides the
+    recognized title, everything the catalog returned for the *previous*
+    title — cover, blurb, categories, rating — describes the wrong book,
+    so the correction endpoint clears those fields and schedules this to
+    repopulate them.
+
+    The job is left in `running` by the endpoint, so the client's existing
+    polling picks the new data up without any special-casing.
+
+    Args:
+        job_id: The corrected job.
+        title: The corrected title.
+        author: The corrected author, when given.
+        session_factory: The session factory to open a worker session from.
+        data_fetcher: The fetcher to gather the corrected book's data with.
+    """
+    async with session_factory() as db:
+        job = await db.get(Job, job_id)
+        if job is None:
+            logger.error("job_not_found_in_refresh", job_id=job_id)
+            return
+
+        book = await _fetch_book_data(db, data_fetcher, job_id, title, author)
+
+        # Reset the catalog half unconditionally before repopulating it —
+        # including `summary`, which described the previously recognized
+        # book and would otherwise survive a correction that changed which
+        # book this is.
+        result: dict[str, Any] = {**(job.result or {}), **EMPTY_BOOK_FIELDS}
+        if book is not None:
+            result.update(book_fields(book))
+        # A correction is the user's word: never let the catalog's spelling
+        # overwrite what they typed, even when it matched a different book.
+        result["title"] = title
+        result["author"] = author
+
+        job.result = result
+        job.status = JobStatus.DONE.value
+        await db.commit()
+
+
+# The catalog half of a job result, before anything has been fetched.
+EMPTY_BOOK_FIELDS: dict[str, Any] = {
+    "summary": None,
+    "book_id": None,
+    "metadata_found": False,
+    "description": None,
+    "cover_url": None,
+    "categories": [],
+    "average_rating": None,
+    "ratings_count": None,
+    "source_count": 0,
+}
+
+
+def book_fields(book: Book) -> dict[str, Any]:
+    """Maps a cached book onto the catalog half of a job result.
+
+    Args:
+        book: The cached book.
+
+    Returns:
+        The fields to merge into `job.result`. `summary` is deliberately
+        absent — it belongs to Module 5 and must not be reset here.
+    """
+    return {
+        "title": book.title,
+        "author": book.author,
+        "book_id": book.id,
+        "metadata_found": book.metadata_found,
+        "description": book.description,
+        "cover_url": book.cover_url,
+        "categories": book.categories or [],
+        "average_rating": book.average_rating,
+        "ratings_count": book.ratings_count,
+        "source_count": len(book.text_sources),
+    }
 
 
 async def _fetch_book_data(

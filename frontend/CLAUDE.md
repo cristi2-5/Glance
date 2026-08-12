@@ -72,6 +72,25 @@ The backend responds with two shapes of `detail`: a string for domain exceptions
 
 `'unknown' | 'authenticated' | 'unauthenticated'`. Without `'unknown'`, an already-authenticated user briefly sees the login screen on startup, until the token is verified against the Keychain. The splash screen stays visible until the state resolves **and** the fonts have loaded.
 
+### A correction discards the metadata fetched for the old title
+
+Once Module 4 populates covers, blurbs and ratings, the manual-correction
+flow has a trap: if the user corrects "Dune" to something else, the
+metadata already fetched describes the *wrong book*. Leaving it on screen
+under the corrected title is worse than showing nothing — it looks
+authoritative and is simply false.
+
+So `PATCH /jobs/{id}/correction` clears the catalog half of the result
+immediately, puts the job back into `running`, and re-fetches in the
+background. **The client needed no special-casing for this**: `useJob`'s
+`refetchInterval` resumes polling the moment a `running` job lands in the
+cache, and the result screen already handles `running`. The only addition
+is a distinct wait message when `result.corrected` is true — the cover has
+already been read, so "Analyzing" would be a lie.
+
+The corrected title always wins over the catalog's spelling on the way
+back: the user typed it deliberately.
+
 ### Mocks are visibly marked
 
 Screens for Modules 3-6 (not yet implemented on the backend) use data from `src/mocks/`, but always show a `<DemoNote>` or a banner. An unmarked mock is a lie on the screen — indistinguishable from a real result during testing.
@@ -137,7 +156,7 @@ frontend/
 │   │   └── endpoints/              # auth, users, books, jobs
 │   ├── components/
 │   │   ├── ui/                     # Button, Input, Screen, Card, Chip, BannerEroare, NotaDemo
-│   │   └── book/                   # CardCarte, RatingStele
+│   │   └── book/                   # CardCarte, RatingStele, BookCover
 │   ├── config/env.ts               # API_URL inferred from the Metro host
 │   ├── features/
 │   │   ├── auth/schema.ts          # zod validation
@@ -153,6 +172,8 @@ frontend/
 
 Filenames under `app/` and `src/` stayed as originally chosen (e.g. `recomandari.tsx`, `profil.tsx`, `CardCarte.tsx`, `imagine.ts`, `biblioteca.ts`) even after the Romanian→English identifier refactor — `app/` filenames are expo-router route segments, so renaming them would change live URLs; the `src/` ones were left unchanged for consistency. The *exported* symbols inside these files are English (e.g. `CardCarte.tsx` exports `BookCard`, `NotaDemo.tsx` exports `DemoNote`).
 
+**New files get English names** (e.g. `BookCover.tsx`, added in Module 4). The legacy names are grandfathered, not a convention to follow — so the two spellings will coexist for a while, and that's expected.
+
 `app/` contains only routing; logic lives in `src/features/`. Rule of thumb: if a file under `app/` exceeds ~200 lines or contains network logic, move it into a feature hook.
 
 ## Modules — status
@@ -166,8 +187,9 @@ The frontend progresses **in parallel with the backend**, module by module. Don'
 - [x] **Module 2: Scan skeleton** — `expo-camera`, resize before upload, `POST /books/analyze-cover`, polling on `GET /jobs/{id}` with automatic stop, result screen with `pending`/`running`/`done`/`failed` states.
       *Done when:* a real photo goes through the flow up to displaying the placeholder result.
 - [x] **Module 3: Vision** — real title/author with confidence displayed on the result screen (`app/(app)/scan/[jobId].tsx`); confidence-chip tone and the "Fix the title" prompt both key off the backend's `needs_review` flag, never a local threshold. Manual-correction screen at `app/(app)/scan/correct/[jobId].tsx`, wired to `PATCH /jobs/{id}/correction` via `useCorrectJob` (`src/features/scan/hooks.ts`), which writes the result straight into the `['job', jobId]` query cache on success.
-- [ ] **Module 4: Data fetcher** — real covers (`cover_url` → `expo-image`), categories, average rating.
-- [ ] **Module 5: RAG** — real summary with citations; every claim must link to a tappable source. The `SourceReview` structure is already in the result screen.
+- [x] **Module 4: Data fetcher** — real covers (`cover_url` → `expo-image` via the shared `BookCover`), publisher description, categories, average rating with its ratings count. `AnalysisResult` in `src/types/api.ts` gained `book_id`, `metadata_found`, `description`, `ratings_count`, `source_count`. Two states the screen now handles explicitly: **no catalog match** (`metadata_found === false` → a plain notice, not a blank page — routine for Romanian editions) and **a corrected title** (see below).
+      *Done when:* `npx tsc --noEmit` clean and `npx expo export` bundles. **Done.**
+- [ ] **Module 5: RAG** — real summary with citations; every claim must link to a tappable source. The `SourceReview` structure is already in the result screen. Until then, the screen shows the publisher's `description` under a "From the publisher" heading, explicitly labelled so it isn't mistaken for a generated summary.
 - [ ] **Module 6: Recommendations** — replace the mocks in `src/features/library/hooks.ts`, set `DEMO_DATA` to `false`, check the types in `src/types/biblioteca.ts` against the real schema.
 - [ ] **Module 7: Polish** — animations (`react-native-reanimated` already installed), empty states, offline handling, dark theme (tokens are structured for it).
 

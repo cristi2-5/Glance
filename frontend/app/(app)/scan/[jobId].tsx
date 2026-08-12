@@ -1,9 +1,11 @@
 /**
  * The result of a scan.
  *
- * Polls `GET /jobs/{id}` until the job reaches `done` or `failed`. As long
- * as Modules 3-5 aren't ready, the backend returns a placeholder and the
- * screen shows demo data — explicitly marked, never slipped in as real.
+ * Polls `GET /jobs/{id}` until the job reaches `done` or `failed`. Shows
+ * the recognized title/author (Module 3) and the catalog metadata gathered
+ * for it (Module 4). If the backend returns a shape older than this build
+ * understands, the screen falls back to demo data — explicitly marked,
+ * never slipped in as real.
  */
 
 import { Feather } from '@expo/vector-icons'
@@ -12,6 +14,7 @@ import { useMemo } from 'react'
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 
 import { ApiError } from '@/api/errors'
+import { BookCover } from '@/components/book/BookCover'
 import { RatingStars } from '@/components/book/RatingStele'
 import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
@@ -76,7 +79,11 @@ export default function RezultatScanareScreen() {
   }
 
   if (job.status === 'pending' || job.status === 'running') {
-    return <InProgressState status={job.status} />
+    // A job that is running *and* already carries a correction is
+    // re-fetching metadata for the title the user just typed — a different
+    // wait, worth naming, since the cover has already been read.
+    const isRefetchingCorrection = job.status === 'running' && job.result?.['corrected'] === true
+    return <InProgressState refetchingCorrection={isRefetchingCorrection} status={job.status} />
   }
 
   if (job.status === 'failed') {
@@ -114,18 +121,34 @@ export default function RezultatScanareScreen() {
         <View style={styles.demoWarning}>
           <Feather color={colors.accent} name="info" size={16} />
           <Text style={styles.demoText}>
-            Demo data. The backend received the image, but recognition and synthesis arrive with
-            Modules 3-5.
+            Demo data. The backend received the image, but returned a result this build doesn&apos;t
+            recognize.
           </Text>
         </View>
       ) : null}
 
       <View style={styles.header}>
-        <Text style={styles.bookTitle}>{analysis.title}</Text>
-        {analysis.author ? <Text style={styles.author}>by {analysis.author}</Text> : null}
+        <View style={styles.identity}>
+          <BookCover size="hero" title={analysis.title} url={analysis.cover_url} />
+
+          <View style={styles.identityText}>
+            <Text style={styles.bookTitle}>{analysis.title}</Text>
+            {analysis.author ? <Text style={styles.author}>by {analysis.author}</Text> : null}
+
+            {analysis.average_rating !== null ? (
+              <View style={styles.ratingRow}>
+                <RatingStars value={analysis.average_rating} />
+                {analysis.ratings_count !== null ? (
+                  <Text style={styles.ratingCount}>
+                    {formatRatingsCount(analysis.ratings_count)}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        </View>
 
         <View style={styles.metaRow}>
-          {analysis.average_rating !== null ? <RatingStars value={analysis.average_rating} /> : null}
           {analysis.corrected ? (
             <Text style={styles.correctedCaption}>Corrected by you</Text>
           ) : (
@@ -147,6 +170,8 @@ export default function RezultatScanareScreen() {
             ))}
           </View>
         ) : null}
+
+        {!analysis.metadata_found && !isDemo ? <NoMetadataNotice /> : null}
 
         {analysis.needs_review ? (
           <View style={styles.needsReviewCard}>
@@ -172,6 +197,21 @@ export default function RezultatScanareScreen() {
           <Text style={styles.sectionTitle}>About the book</Text>
           <Text style={styles.summary}>{analysis.summary}</Text>
         </View>
+      ) : analysis.description ? (
+        // Until Module 5 there is no generated summary, so we show the
+        // publisher's blurb — labelled as such, so it isn't mistaken for
+        // one.
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>From the publisher</Text>
+          <Text style={styles.summary}>{analysis.description}</Text>
+          {analysis.source_count > 0 ? (
+            <Text style={styles.sourceCaption}>
+              {analysis.source_count === 1
+                ? '1 source passage gathered. A written summary arrives with the next step.'
+                : `${analysis.source_count} source passages gathered. A written summary arrives with the next step.`}
+            </Text>
+          ) : null}
+        </View>
       ) : null}
 
       {analysis.reviews.length > 0 ? (
@@ -196,8 +236,63 @@ export default function RezultatScanareScreen() {
   )
 }
 
+/**
+ * Formats a ratings count for display next to the stars.
+ *
+ * Thousands are abbreviated because the exact figure carries no meaning to
+ * a reader — only the order of magnitude does.
+ */
+function formatRatingsCount(count: number): string {
+  if (count >= 1000) {
+    return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}k ratings`
+  }
+  return count === 1 ? '1 rating' : `${count} ratings`
+}
+
+/**
+ * Shown when no catalog matched the scanned cover.
+ *
+ * Not an error state: the recognition worked, the book simply isn't in
+ * Google Books or Open Library — routine for Romanian editions. Saying so
+ * is better than a page that silently lacks a cover, a blurb and a rating,
+ * which reads as the app being broken.
+ */
+function NoMetadataNotice() {
+  return (
+    <View style={styles.noticeCard}>
+      <Feather color={colors.inkMuted} name="book" size={18} />
+      <View style={styles.noticeText}>
+        <Text style={styles.noticeTitle}>No catalog entry for this one</Text>
+        <Text style={styles.noticeBody}>
+          We read the cover, but neither Google Books nor Open Library has this edition. That&apos;s
+          common for translations and small print runs.
+        </Text>
+      </View>
+    </View>
+  )
+}
+
 /** The screen shown while the job is in progress. */
-function InProgressState({ status }: { status: 'pending' | 'running' }) {
+function InProgressState({
+  status,
+  refetchingCorrection = false,
+}: {
+  status: 'pending' | 'running'
+  /** `true` while metadata is being re-gathered for a corrected title. */
+  refetchingCorrection?: boolean
+}) {
+  if (refetchingCorrection) {
+    return (
+      <Screen contentStyle={styles.centered}>
+        <ActivityIndicator color={colors.accent} size="large" />
+        <Text style={styles.stateTitle}>Looking that up</Text>
+        <Text style={styles.stateText}>
+          Finding the cover and details for the title you entered…
+        </Text>
+      </Screen>
+    )
+  }
+
   const message =
     status === 'pending'
       ? 'Image received. Waiting for the analysis to start…'
@@ -267,6 +362,15 @@ const styles = StyleSheet.create({
   header: {
     gap: spacing.md,
   },
+  identity: {
+    flexDirection: 'row',
+    gap: spacing.lg,
+  },
+  identityText: {
+    flex: 1,
+    gap: spacing.sm,
+    justifyContent: 'center',
+  },
   bookTitle: {
     ...typography.displayMedium,
     color: colors.ink,
@@ -274,7 +378,37 @@ const styles = StyleSheet.create({
   author: {
     ...typography.body,
     color: colors.inkMuted,
-    marginTop: -spacing.sm,
+  },
+  ratingRow: {
+    gap: spacing.xs,
+  },
+  ratingCount: {
+    ...typography.caption,
+    color: colors.inkFaint,
+  },
+  noticeCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.md,
+  },
+  noticeText: {
+    flex: 1,
+    gap: 2,
+  },
+  noticeTitle: {
+    ...typography.label,
+    color: colors.ink,
+  },
+  noticeBody: {
+    ...typography.caption,
+    color: colors.inkMuted,
+  },
+  sourceCaption: {
+    ...typography.caption,
+    color: colors.inkFaint,
   },
   metaRow: {
     flexDirection: 'row',

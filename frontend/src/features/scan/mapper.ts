@@ -1,11 +1,15 @@
 /**
  * Translating a job's `result` field into the display model.
  *
- * Backend Module 2 still returns a placeholder
- * (`{message, image_size_bytes}`), because OCR and synthesis only arrive in
- * Modules 3-5. We detect the shape received and tell the caller whether the
- * data is real or demo — the screen shows an explicit indicator, so we
- * never confuse a mock with a real result.
+ * The backend fills this shape progressively as modules land: recognition
+ * in Module 3, catalog metadata in Module 4, the summary and citations in
+ * Module 5. We detect whether the shape received is real and tell the
+ * caller — the screen shows an explicit indicator, so we never confuse a
+ * mock with a real result.
+ *
+ * Every field is read defensively rather than trusted, because this data
+ * crosses a version boundary: a phone running a build newer than the
+ * backend it's pointed at would otherwise crash on a missing key.
  */
 
 import { DEMO_ANALYSIS } from '@/mocks/analiza'
@@ -53,10 +57,17 @@ export function interpretResult(result: Record<string, unknown> | null): Display
       method: raw.method ?? 'ocr',
       needs_review: raw.needs_review ?? false,
       corrected: raw.corrected ?? false,
-      summary: raw.summary ?? null,
+      book_id: typeof raw.book_id === 'number' ? raw.book_id : null,
+      // Absent rather than false is what a pre-Module-4 backend sends, and
+      // both mean the same thing here: no catalog data to show.
+      metadata_found: raw.metadata_found ?? false,
+      description: raw.description ?? null,
       cover_url: raw.cover_url ?? null,
       categories: Array.isArray(raw.categories) ? raw.categories : [],
       average_rating: typeof raw.average_rating === 'number' ? raw.average_rating : null,
+      ratings_count: typeof raw.ratings_count === 'number' ? raw.ratings_count : null,
+      source_count: typeof raw.source_count === 'number' ? raw.source_count : 0,
+      summary: raw.summary ?? null,
       reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
     },
   }

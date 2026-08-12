@@ -3,13 +3,13 @@
  * title, author and metadata.
  */
 
-import { Image } from 'expo-image'
 import { StyleSheet, Text, View } from 'react-native'
 
 import { Card } from '@/components/ui/Card'
-import { colors, radius, spacing, typography } from '@/theme'
+import { colors, spacing, typography } from '@/theme'
 import type { BookSummary } from '@/types/biblioteca'
 
+import { BookCover } from './BookCover'
 import { RatingStars } from './RatingStele'
 
 interface BookCardProps {
@@ -23,7 +23,7 @@ export function BookCard({ book, footer, onPress }: BookCardProps) {
   return (
     <Card {...(onPress ? { onPress } : {})} style={styles.card}>
       <View style={styles.row}>
-        <Cover title={book.title} url={book.cover_url} />
+        <BookCover title={book.title} url={book.cover_url} />
 
         <View style={styles.details}>
           <Text numberOfLines={2} style={styles.title}>
@@ -48,23 +48,6 @@ export function BookCard({ book, footer, onPress }: BookCardProps) {
   )
 }
 
-/**
- * The book's cover. When the URL is missing — the usual case until
- * Module 4 — we show the title's initial on a warm background, instead of
- * an empty gray square.
- */
-function Cover({ url, title }: { url: string | null; title: string }) {
-  if (url) {
-    return <Image contentFit="cover" source={{ uri: url }} style={styles.cover} transition={200} />
-  }
-
-  return (
-    <View style={[styles.cover, styles.emptyCover]}>
-      <Text style={styles.initial}>{title.charAt(0).toUpperCase()}</Text>
-    </View>
-  )
-}
-
 const styles = StyleSheet.create({
   card: {
     padding: spacing.md,
@@ -72,22 +55,6 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     gap: spacing.md,
-  },
-  cover: {
-    width: 56,
-    height: 84,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surfaceMuted,
-  },
-  emptyCover: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  initial: {
-    ...typography.displayMedium,
-    color: colors.borderStrong,
   },
   details: {
     flex: 1,

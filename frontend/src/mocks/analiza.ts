@@ -23,9 +23,16 @@ export const DEMO_ANALYSIS: AnalysisResult = {
     "leads to the abbey's library — a labyrinth where a book is hidden that someone is willing to " +
     'kill to keep closed. The novel blends a detective investigation with an essay on semiotics, ' +
     'heresy, and the power of books.',
+  book_id: null,
+  metadata_found: true,
+  description:
+    'The first novel by semiotician Umberto Eco: a murder investigation in a fourteenth-century ' +
+    'abbey, which is also a treatise on signs, heresy, and the danger of a book.',
   cover_url: null,
   categories: ['Historical fiction', 'Mystery', 'Italian literature'],
   average_rating: 4.2,
+  ratings_count: 3140,
+  source_count: 3,
   reviews: [
     {
       id: 'wiki-reception-1',
