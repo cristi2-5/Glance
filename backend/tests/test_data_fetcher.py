@@ -266,3 +266,121 @@ async def test_fetch_is_scoped_to_the_requested_book_only(db: AsyncSession) -> N
 
     titles = (await db.scalars(select(Book.title))).all()
     assert list(titles) == ["Dune"]
+
+
+# --- Bare catalog records ---------------------------------------------------
+#
+# Google Books and Open Library both hold entries that are nothing but a
+# title and an author — no description, no cover, no subjects, no rating.
+# Romanian editions are almost all like this. Observed live: "Baltagul" and
+# "Călătorie spre centrul pământului" both matched, both carried nothing.
+
+
+def _bare_match(source: SourceName = SourceName.GOOGLE_BOOKS) -> SourceResult:
+    """A matched result carrying only the fields that came off the cover."""
+    return SourceResult(
+        source=source,
+        metadata=BookMetadata(title="Baltagul", author="Mihail Sadoveanu"),
+        passages=[],
+        url="https://books.test/baltagul",
+    )
+
+
+async def test_a_bare_catalog_record_is_not_reported_as_metadata_found(
+    db: AsyncSession,
+) -> None:
+    # The bug: `metadata_found` keyed off `matched` alone, so a book the
+    # catalog merely *has a row for* was flagged found, and the client
+    # rendered its success state over an entirely empty result.
+    google = FakeContentSource(SourceName.GOOGLE_BOOKS, _bare_match())
+    book = await _fetcher(google).fetch(db, "Baltagul", "Mihail Sadoveanu")
+
+    assert book.metadata_found is False
+    assert book.title == "Baltagul", "the title is still worth keeping"
+    assert book.description is None
+    assert book.cover_url is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["description", "cover_url", "categories", "average_rating"],
+)
+async def test_any_single_substantive_field_counts_as_found(db: AsyncSession, field: str) -> None:
+    values: dict[str, object] = {
+        "description": "A shepherd's widow searches for her husband.",
+        "cover_url": "https://books.test/baltagul.jpg",
+        "categories": ["Fiction"],
+        "average_rating": 4.1,
+    }
+    result = SourceResult(
+        source=SourceName.GOOGLE_BOOKS,
+        metadata=BookMetadata(title="Baltagul", **{field: values[field]}),  # type: ignore[arg-type]
+    )
+    book = await _fetcher(FakeContentSource(SourceName.GOOGLE_BOOKS, result)).fetch(
+        db, "Baltagul", None
+    )
+
+    assert book.metadata_found is True
+
+
+async def test_passages_alone_count_as_found(db: AsyncSession) -> None:
+    # Wikipedia contributes no catalog fields at all — only prose. A book
+    # with a Reception section and nothing else still has something to show.
+    book = await _fetcher(FakeContentSource(SourceName.WIKIPEDIA, _wikipedia())).fetch(
+        db, "Dune", "Frank Herbert"
+    )
+
+    assert book.metadata_found is True
+    assert len(book.text_sources) == 1
+
+
+# --- Empty entries expire quickly -------------------------------------------
+
+
+async def test_an_empty_entry_is_retried_once_its_short_ttl_lapses(
+    db: AsyncSession,
+) -> None:
+    # The half of the bug that made it look permanent: an empty result was
+    # settled for the full 30 days, so rescanning the book re-served the
+    # same emptiness and there was no way to force a retry.
+    settings = Settings(book_cache_ttl_days=30, empty_book_cache_ttl_hours=6)
+    google = FakeContentSource(SourceName.GOOGLE_BOOKS, _bare_match())
+    fetcher = _fetcher(google, settings=settings)
+
+    book = await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
+    assert book.metadata_found is False
+
+    book.sources_fetched_at = datetime.utcnow() - timedelta(hours=7)
+    await db.commit()
+
+    await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
+    assert len(google.calls) == 2, "an empty entry must be retried, not pinned for a month"
+
+
+async def test_an_empty_entry_is_still_cached_within_its_short_ttl(
+    db: AsyncSession,
+) -> None:
+    # The counterweight: repeated scans in one sitting must not re-query
+    # three APIs every time.
+    settings = Settings(empty_book_cache_ttl_hours=6)
+    google = FakeContentSource(SourceName.GOOGLE_BOOKS, _bare_match())
+    fetcher = _fetcher(google, settings=settings)
+
+    await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
+    await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
+
+    assert len(google.calls) == 1
+
+
+async def test_a_populated_entry_keeps_the_long_ttl(db: AsyncSession) -> None:
+    # A found book must not inherit the short retry window.
+    settings = Settings(book_cache_ttl_days=30, empty_book_cache_ttl_hours=6)
+    google = FakeContentSource(SourceName.GOOGLE_BOOKS, _google())
+    fetcher = _fetcher(google, settings=settings)
+
+    book = await fetcher.fetch(db, "Dune", "Frank Herbert")
+    book.sources_fetched_at = datetime.utcnow() - timedelta(days=3)
+    await db.commit()
+
+    await fetcher.fetch(db, "Dune", "Frank Herbert")
+    assert len(google.calls) == 1

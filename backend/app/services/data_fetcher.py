@@ -91,6 +91,7 @@ class BookDataFetcher:
     def __init__(self, sources: list[ContentSource], settings: Settings) -> None:
         self._sources = sources
         self._ttl = timedelta(days=settings.book_cache_ttl_days)
+        self._empty_ttl = timedelta(hours=settings.empty_book_cache_ttl_hours)
 
     async def fetch(self, db: AsyncSession, title: str, author: str | None = None) -> Book:
         """Returns the cached book, fetching it from the sources on a miss.
@@ -136,15 +137,22 @@ class BookDataFetcher:
         if the row exists — that is the half-populated state left by an
         earlier outage, and it should be retried rather than served.
 
+        An entry the catalogs yielded nothing for expires far sooner than a
+        populated one. Emptiness is rarely a durable fact — a bare catalog
+        record gets filled in, a source that was degraded recovers — and
+        pinning it for the full TTL makes the gap permanent from the user's
+        side, because rescanning the book just re-serves the empty row.
+
         Args:
             book: The cached book.
 
         Returns:
-            `True` when the entry is complete and within the TTL.
+            `True` when the entry is complete and within its TTL.
         """
         if book.sources_fetched_at is None:
             return False
-        return datetime.utcnow() - book.sources_fetched_at < self._ttl
+        ttl = self._ttl if book.metadata_found else self._empty_ttl
+        return datetime.utcnow() - book.sources_fetched_at < ttl
 
     async def _gather(self, title: str, author: str | None) -> list[SourceResult]:
         """Queries every source concurrently.
@@ -217,7 +225,6 @@ class BookDataFetcher:
         book.isbn_10 = metadata.isbn_10
         book.average_rating = metadata.average_rating
         book.ratings_count = metadata.ratings_count
-        book.metadata_found = bool(matched)
 
         passages = [
             TextSource(
@@ -231,6 +238,20 @@ class BookDataFetcher:
             for result in matched
             for passage in result.passages
         ]
+
+        # `metadata_found` answers "is there anything to show?", not "does a
+        # catalog have a record?". Those come apart constantly: Google Books
+        # and Open Library both hold bare entries — title and author, no
+        # description, no cover, no subjects — for editions outside the
+        # English-language mainstream, and Romanian ones are almost all like
+        # that. Keying the flag on `matched` alone marked those books "found"
+        # and left the client rendering its success state over an empty
+        # result, which reads as a broken app rather than an honest gap.
+        #
+        # Title and author deliberately don't count as content: they came off
+        # the cover, so a book whose only "metadata" is its own title tells
+        # the user nothing they didn't photograph.
+        book.metadata_found = _has_content(metadata, passages)
 
         # Replace the collection wholesale rather than appending, so a
         # refresh after the TTL expires does not accumulate a second copy
@@ -273,6 +294,27 @@ class BookDataFetcher:
             sources_matched=[result.source.value for result in matched],
         )
         return book
+
+
+def _has_content(metadata: BookMetadata, passages: list[TextSource]) -> bool:
+    """Decides whether a fetch produced anything worth showing the user.
+
+    Args:
+        metadata: The merged catalog metadata.
+        passages: The prose passages gathered for the RAG corpus.
+
+    Returns:
+        `True` if any substantive field was obtained. `title` and `author`
+        are excluded on purpose — they originate from the cover, so they
+        are not evidence a catalog contributed anything.
+    """
+    return bool(
+        metadata.description
+        or metadata.cover_url
+        or metadata.categories
+        or metadata.average_rating is not None
+        or passages
+    )
 
 
 def _merge_metadata(results: list[SourceResult]) -> BookMetadata:

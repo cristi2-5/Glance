@@ -114,6 +114,15 @@ class Settings(BaseSettings):
     # Book metadata and critical reception change on the scale of months,
     # so a long TTL costs nothing and keeps repeat scans instant.
     book_cache_ttl_days: int = 30
+    # A book the catalogs had *nothing* on gets a far shorter TTL. Emptiness
+    # is not a durable fact: it is usually a bare catalog record that gets
+    # filled in, a Wikipedia article that does not exist yet, or a source
+    # that was degraded at the moment we asked. Caching that for the full 30
+    # days makes the gap permanent from the user's side — rescanning the
+    # book returns the same empty entry and there is no way to force a
+    # retry. Short enough to self-heal, long enough that repeated scans in
+    # one session don't hammer three APIs.
+    empty_book_cache_ttl_hours: int = 6
     # Guards against a pathological Wikipedia article filling SQLite; well
     # above any real Reception section.
     source_max_passage_chars: int = 20_000

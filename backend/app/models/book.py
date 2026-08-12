@@ -66,9 +66,14 @@ class Book(Base):
         isbn_10: ISBN-10, when the catalog reports one.
         average_rating: Mean reader rating, on the source's own scale.
         ratings_count: How many ratings `average_rating` averages.
-        metadata_found: `False` when no catalog matched the title at all —
-            the row then holds only the vision-derived title/author, and
-            the client shows a "metadata not found" state.
+        metadata_found: `False` when the fetch produced nothing worth
+            showing — either no catalog matched, or one matched but held
+            only a bare record (title and author, no description, cover,
+            subjects or rating), which is the norm for Romanian editions.
+            The row then carries essentially the vision-derived title and
+            author, and the client shows its "metadata not found" state.
+            Title and author never count as content: they came off the
+            cover, not from a catalog.
         sources_fetched_at: When the `TextSource` rows were last refreshed.
             `None` means text has never been gathered for this book; the
             TTL check in `BookDataFetcher` reads this field.

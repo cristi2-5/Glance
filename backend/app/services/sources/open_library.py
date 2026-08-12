@@ -12,12 +12,12 @@ the search index does not include.
 from typing import Any
 
 import structlog
-from rapidfuzz import fuzz
 
 from app.core.config import Settings
 from app.models.book import SourceKind, SourceName
 from app.services.http_utils import get_json_with_retry
 from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
+from app.services.sources.matching import MIN_TITLE_SIMILARITY, title_similarity
 
 logger = structlog.get_logger(__name__)
 
@@ -25,7 +25,6 @@ _SEARCH_URL = "https://openlibrary.org/search.json"
 _WORKS_URL = "https://openlibrary.org/works/{key}.json"
 _COVER_URL = "https://covers.openlibrary.org/b/id/{cover_id}-L.jpg"
 
-_MIN_TITLE_SIMILARITY = 70.0
 _MAX_SUBJECTS = 20
 
 
@@ -115,12 +114,12 @@ class OpenLibrarySource:
             similarity floor.
         """
         best: dict[str, Any] | None = None
-        best_score = _MIN_TITLE_SIMILARITY
+        best_score = MIN_TITLE_SIMILARITY
 
         for doc in docs:
             if not isinstance(doc, dict) or not doc.get("title"):
                 continue
-            score = fuzz.token_set_ratio(title.casefold(), str(doc["title"]).casefold())
+            score = title_similarity(title, str(doc["title"]))
             if score >= best_score:
                 best, best_score = doc, score
 

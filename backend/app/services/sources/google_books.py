@@ -10,22 +10,16 @@ corpus is the publisher's description.
 from typing import Any
 
 import structlog
-from rapidfuzz import fuzz
 
 from app.core.config import Settings
 from app.models.book import SourceKind, SourceName
 from app.services.http_utils import get_json_with_retry
 from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
+from app.services.sources.matching import MIN_TITLE_SIMILARITY, title_similarity
 
 logger = structlog.get_logger(__name__)
 
 _VOLUMES_URL = "https://www.googleapis.com/books/v1/volumes"
-
-# Below this title similarity the top hit is treated as a different book.
-# Google Books always returns *something* for a free-text query, so without
-# a floor a misread cover silently yields confident metadata for the wrong
-# title — worse than reporting nothing.
-_MIN_TITLE_SIMILARITY = 70.0
 
 
 class GoogleBooksSource:
@@ -87,10 +81,10 @@ class GoogleBooksSource:
 
         Returns:
             The best-matching volume's `volumeInfo`, or `None` if nothing
-            cleared `_MIN_TITLE_SIMILARITY`.
+            cleared `MIN_TITLE_SIMILARITY`.
         """
         best: dict[str, Any] | None = None
-        best_score = _MIN_TITLE_SIMILARITY
+        best_score = MIN_TITLE_SIMILARITY
 
         for item in items:
             if not isinstance(item, dict):
@@ -103,7 +97,7 @@ class GoogleBooksSource:
             if info.get("subtitle"):
                 candidate = f"{candidate}: {info['subtitle']}"
 
-            score = fuzz.token_set_ratio(title.casefold(), candidate.casefold())
+            score = title_similarity(title, candidate)
             if score >= best_score:
                 best, best_score = info, score
 

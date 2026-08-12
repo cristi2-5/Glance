@@ -21,18 +21,23 @@ sections individually and lets us split headings locally.
 import re
 
 import structlog
-from rapidfuzz import fuzz
 
 from app.core.config import Settings
 from app.models.book import SourceKind, SourceName
 from app.services.http_utils import get_json_with_retry
 from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
+from app.services.sources.matching import title_similarity
 
 logger = structlog.get_logger(__name__)
 
 _API_URL = "https://{lang}.wikipedia.org/w/api.php"
 _ARTICLE_URL = "https://{lang}.wikipedia.org/wiki/{title}"
 
+# Deliberately below `matching.MIN_TITLE_SIMILARITY`: Wikipedia article
+# titles are prose, not catalog records, so they drift further from the
+# cover ("Baltagul" → "The Hatchet") than a catalog entry does. The cost of
+# a loose match here is lower too — Wikipedia contributes passages, which
+# are attributed and citable, not the cover and blurb shown as fact.
 _MIN_TITLE_SIMILARITY = 65.0
 
 # `explaintext` renders headings as "== Section ==" / "=== Subsection ===".
@@ -179,7 +184,7 @@ class WikipediaSource:
             candidate = str(entry["title"])
             # Strip the disambiguator — "Dune (novel)" should match "Dune".
             bare = re.sub(r"\s*\([^)]*\)\s*$", "", candidate)
-            score = fuzz.token_set_ratio(title.casefold(), bare.casefold())
+            score = title_similarity(title, bare)
             if score >= best_score:
                 best, best_score = candidate, score
 
