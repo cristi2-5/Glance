@@ -103,6 +103,40 @@ already been read, so "Analyzing" would be a lie.
 The corrected title always wins over the catalog's spelling on the way
 back: the user typed it deliberately.
 
+### The summary is a section that loads itself, not part of the job result
+
+The scan job returns the book — cover, title, rating, blurb — in one poll.
+The generated summary is a **separate request** (`GET /books/{book_id}/summary`,
+`useBookSummary`), and `SummarySection` owns its own loading, error,
+unavailable and success states.
+
+The reason is timing: the first summary for a book runs the whole RAG
+pipeline on the laptop, embedding every passage locally before generating.
+Blocking the result screen on that would hide a book we already have
+everything else for, behind a spinner, for up to a minute and a half. So
+the screen renders immediately and the summary section fills in.
+
+Three consequences worth keeping:
+
+- **`available: false` is a success, not an error.** It means the book had
+  nothing worth summarizing — routine for Romanian editions and small print
+  runs. A thrown `ApiError` means the request actually failed. The section
+  renders those differently: the first falls back to the publisher's blurb
+  with an explanation, the second says so and offers "Try again".
+- **The query is not retried automatically** (`retry: false`). The
+  expensive failure is a 503 from an unreachable Ollama or Groq, which a
+  retry a second later hits again — while each attempt can hold a 90 s
+  timeout. An explicit button is cheaper and more honest.
+- **The demo result never gets a summary.** `DEMO_ANALYSIS.book_id` is
+  `null` and the section is skipped entirely. A fabricated summary with
+  fabricated citations would be indistinguishable from a real one during
+  testing — the exact thing the "mocks are visibly marked" rule exists to
+  prevent, and worse here because citations *look* like verification.
+
+"From the publisher" stays as a heading in every fallback path. A
+publisher's blurb is marketing copy; a RAG summary is sourced description.
+Letting a reader mistake one for the other is what the label prevents.
+
 ### Mocks are visibly marked
 
 Screens for Modules 3-6 (not yet implemented on the backend) use data from `src/mocks/`, but always show a `<DemoNote>` or a banner. An unmarked mock is a lie on the screen — indistinguishable from a real result during testing.
@@ -168,7 +202,7 @@ frontend/
 │   │   └── endpoints/              # auth, users, books, jobs
 │   ├── components/
 │   │   ├── ui/                     # Button, Input, Screen, Card, Chip, BannerEroare, NotaDemo
-│   │   └── book/                   # CardCarte, RatingStele, BookCover
+│   │   └── book/                   # CardCarte, RatingStele, BookCover, SummarySection
 │   ├── config/env.ts               # API_URL inferred from the Metro host
 │   ├── features/
 │   │   ├── auth/schema.ts          # zod validation
@@ -201,7 +235,8 @@ The frontend progresses **in parallel with the backend**, module by module. Don'
 - [x] **Module 3: Vision** — real title/author with confidence displayed on the result screen (`app/(app)/scan/[jobId].tsx`); confidence-chip tone and the "Fix the title" prompt both key off the backend's `needs_review` flag, never a local threshold. Manual-correction screen at `app/(app)/scan/correct/[jobId].tsx`, wired to `PATCH /jobs/{id}/correction` via `useCorrectJob` (`src/features/scan/hooks.ts`), which writes the result straight into the `['job', jobId]` query cache on success.
 - [x] **Module 4: Data fetcher** — real covers (`cover_url` → `expo-image` via the shared `BookCover`), publisher description, categories, average rating with its ratings count. `AnalysisResult` in `src/types/api.ts` gained `book_id`, `metadata_found`, `description`, `ratings_count`, `source_count`. Two states the screen now handles explicitly: **no catalog match** (`metadata_found === false` → a plain notice, not a blank page — routine for Romanian editions) and **a corrected title** (see below).
       *Done when:* `npx tsc --noEmit` clean and `npx expo export` bundles. **Done.**
-- [ ] **Module 5: RAG** — real summary with citations; every claim must link to a tappable source. The `SourceReview` structure is already in the result screen. Until then, the screen shows the publisher's `description` under a "From the publisher" heading, explicitly labelled so it isn't mistaken for a generated summary.
+- [x] **Module 5: RAG** — real summary with citations. `src/components/book/SummarySection.tsx` owns the whole section: it fetches itself via `useBookSummary` (`GET /books/{book_id}/summary`), renders the claims as flowing prose where **each sentence is tappable** and highlights the numbered source card(s) it came from, and keeps the publisher's `description` under its "From the publisher" heading as the fallback. `AnalysisResult` lost `summary` and `reviews`; `BookSummary`, `SummaryClaim` and the extended `SourceReview` replace them in `src/types/api.ts`.
+      *Done when:* `npx tsc --noEmit` clean and `npx expo export` bundles. **Done.**
 - [ ] **Module 6: Recommendations** — replace the mocks in `src/features/library/hooks.ts`, set `DEMO_DATA` to `false`, check the types in `src/types/biblioteca.ts` against the real schema.
 - [ ] **Module 7: Polish** — animations (`react-native-reanimated` already installed), empty states, offline handling, dark theme (tokens are structured for it).
 

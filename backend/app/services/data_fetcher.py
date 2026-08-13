@@ -11,8 +11,10 @@ The flow:
    hit (metadata present and text sources within the TTL) returns
    immediately, with no external call at all.
 2. On a miss, query the three official sources — Google Books, Open
-   Library, Wikipedia — merge them, and persist the result.
-3. Return the book either way.
+   Library, Wikipedia — and merge them.
+3. If the merge produced no cover image, run the fallback chain in
+   `cover_fallback.py` to try and recover one.
+4. Persist the result and return the book either way.
 
 Nothing in step 2 is allowed to fail the request. A source that times
 out, refuses, or simply has no such book is recorded as absent and the
@@ -28,6 +30,7 @@ would pin an empty entry in SQLite for the entire TTL.
 """
 
 import asyncio
+import dataclasses
 import unicodedata
 from datetime import datetime, timedelta
 
@@ -36,8 +39,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.models.book import Book, TextSource
+from app.models.book import Book, SourceName, TextSource
 from app.services.sources.base import BookMetadata, ContentSource, SourceResult
+from app.services.sources.cover_fallback import CoverFallback, OfficialCoverFallback
 from app.services.sources.google_books import GoogleBooksSource
 from app.services.sources.open_library import OpenLibrarySource
 from app.services.sources.wikipedia import WikipediaSource
@@ -88,8 +92,14 @@ class BookDataFetcher:
     (`build_data_fetcher`).
     """
 
-    def __init__(self, sources: list[ContentSource], settings: Settings) -> None:
+    def __init__(
+        self,
+        sources: list[ContentSource],
+        settings: Settings,
+        cover_fallback: CoverFallback | None = None,
+    ) -> None:
         self._sources = sources
+        self._cover_fallback = cover_fallback
         self._ttl = timedelta(days=settings.book_cache_ttl_days)
         self._empty_ttl = timedelta(hours=settings.empty_book_cache_ttl_hours)
 
@@ -115,7 +125,46 @@ class BookDataFetcher:
 
         logger.info("book_cache_miss", key=key, refreshing=book is not None)
         results = await self._gather(title, author)
-        return await self._persist(db, key, title, author, results, existing=book)
+        metadata = _merge_metadata([result for result in results if result.matched])
+        metadata = await self._resolve_cover(metadata, results)
+        return await self._persist(db, key, title, author, results, metadata, existing=book)
+
+    async def _resolve_cover(
+        self, metadata: BookMetadata, results: list[SourceResult]
+    ) -> BookMetadata:
+        """Fills in a cover image when no source supplied one.
+
+        Runs only on the gap: if Google Books or Open Library already
+        contributed a thumbnail through the merge, this makes no requests
+        at all. See `cover_fallback.py` for the chain and its licensing
+        order.
+
+        Args:
+            metadata: The merged catalog metadata.
+            results: What each source returned, for the Wikipedia article
+                title the last leg needs.
+
+        Returns:
+            `metadata` unchanged, or a copy carrying the recovered cover.
+        """
+        if metadata.cover_url or self._cover_fallback is None:
+            return metadata
+
+        article = next(
+            (
+                result.record_ref
+                for result in results
+                if result.source == SourceName.WIKIPEDIA and result.matched
+            ),
+            None,
+        )
+        cover_url = await self._cover_fallback.find_cover(
+            isbn_13=metadata.isbn_13, isbn_10=metadata.isbn_10, wikipedia_article=article
+        )
+        if cover_url is None:
+            return metadata
+
+        return dataclasses.replace(metadata, cover_url=cover_url)
 
     async def _load_cached(self, db: AsyncSession, key: str) -> Book | None:
         """Loads a cached book by its normalized key.
@@ -195,23 +244,24 @@ class BookDataFetcher:
         title: str,
         author: str | None,
         results: list[SourceResult],
+        metadata: BookMetadata,
         existing: Book | None,
     ) -> Book:
-        """Merges the source results into the cache and commits.
+        """Writes the merged source results into the cache and commits.
 
         Args:
             db: The database session.
             key: The normalized cache key.
             title: The vision-derived title, used when no catalog matched.
             author: The vision-derived author, likewise.
-            results: What each source returned.
+            results: What each source returned, for the passages.
+            metadata: The merged catalog metadata, cover fallback included.
             existing: The stale row being refreshed, if there was one.
 
         Returns:
             The persisted `Book`.
         """
         matched = [result for result in results if result.matched]
-        metadata = _merge_metadata(matched)
 
         book = existing or Book(normalized_key=key)
         # Catalog spellings are canonical, but never let a source blank out
@@ -369,7 +419,8 @@ def build_data_fetcher() -> BookDataFetcher:
     Returns:
         A fetcher over the three official sources, in priority order:
         Google Books (richest metadata), Open Library (CC0 gap-filler),
-        Wikipedia (the critical-reception corpus).
+        Wikipedia (the critical-reception corpus) — plus the cover-image
+        fallback that runs when none of them yielded a thumbnail.
     """
     settings = get_settings()
     return BookDataFetcher(
@@ -379,4 +430,5 @@ def build_data_fetcher() -> BookDataFetcher:
             WikipediaSource(settings),
         ],
         settings=settings,
+        cover_fallback=OfficialCoverFallback(settings),
     )

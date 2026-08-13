@@ -10,6 +10,7 @@ corpus is the publisher's description.
 from typing import Any
 
 import structlog
+from rapidfuzz import fuzz
 
 from app.core.config import Settings
 from app.models.book import SourceKind, SourceName
@@ -70,7 +71,7 @@ class GoogleBooksSource:
             logger.info("google_books_no_match", title=title, author=author)
             return SourceResult.no_match(self.name)
 
-        return self._to_result(volume)
+        return self._to_result(volume, author)
 
     def _best_volume(self, items: list[Any], title: str) -> dict[str, Any] | None:
         """Picks the returned volume whose title best matches the query.
@@ -115,11 +116,13 @@ class GoogleBooksSource:
 
         return best
 
-    def _to_result(self, info: dict[str, Any]) -> SourceResult:
+    def _to_result(self, info: dict[str, Any], queried_author: str | None) -> SourceResult:
         """Maps a `volumeInfo` object onto a `SourceResult`.
 
         Args:
             info: The `volumeInfo` object of the chosen volume.
+            queried_author: The author read off the cover, used to pick the
+                real author out of Google's contributor list.
 
         Returns:
             The metadata and description passage the volume carries.
@@ -135,7 +138,7 @@ class GoogleBooksSource:
 
         metadata = BookMetadata(
             title=info.get("title"),
-            author=", ".join(str(a) for a in authors) if authors else None,
+            author=_pick_author([str(a) for a in authors], queried_author),
             description=description,
             categories=[str(c) for c in (info.get("categories") or [])],
             cover_url=images.get("thumbnail") or images.get("smallThumbnail"),
@@ -161,3 +164,50 @@ class GoogleBooksSource:
             url=info.get("infoLink") or info.get("canonicalVolumeLink"),
             license="Google Books API Terms of Service",
         )
+
+
+# How close a listed contributor must be to the name on the cover to be
+# taken as the same person, allowing for "Verne, Jules" and initials.
+_AUTHOR_MATCH_SIMILARITY = 80.0
+
+# Cap on contributors kept when the cover gave us no name to match against.
+_MAX_AUTHORS = 2
+
+
+def _pick_author(authors: list[str], queried_author: str | None) -> str | None:
+    """Chooses the author to display from Google's contributor list.
+
+    `volumeInfo.authors` is a contributor list, not an author field:
+    translators, illustrators and editors are in it, unlabelled and in no
+    reliable order. Joining it wholesale produced, for a Romanian edition
+    of Jules Verne, the author line
+
+        Jules Verne, Anghel Ghițulescu, Simona Schileru, H. Meyer
+
+    — one author, two translators and the original illustrator.
+
+    The cover is the better authority here, and we already have what it
+    said. When the scanned name appears in the list, that entry wins: it is
+    the catalog's spelling of the person actually credited on the book, and
+    everyone else in the list is by elimination not who the cover named.
+
+    Args:
+        authors: The contributor names, as Google returned them.
+        queried_author: The author read off the cover, when vision or OCR
+            produced one.
+
+    Returns:
+        The author to display, or `None` when the volume lists nobody.
+    """
+    if not authors:
+        return None
+
+    if queried_author:
+        best = max(authors, key=lambda name: fuzz.token_sort_ratio(name, queried_author))
+        if fuzz.token_sort_ratio(best, queried_author) >= _AUTHOR_MATCH_SIMILARITY:
+            return best
+
+    # Nothing to match against — a cover whose author line wasn't read, or
+    # a genuinely different name. Keep the first few rather than the whole
+    # list: co-authorship is real and worth showing, a cast of ten is not.
+    return ", ".join(authors[:_MAX_AUTHORS])

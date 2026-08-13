@@ -11,27 +11,20 @@
 import { Feather } from '@expo/vector-icons'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { useMemo } from 'react'
-import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
 
 import { ApiError } from '@/api/errors'
 import { BookCover } from '@/components/book/BookCover'
 import { RatingStars } from '@/components/book/RatingStele'
+import { SummarySection } from '@/components/book/SummarySection'
 import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
-import { Card } from '@/components/ui/Card'
 import { Chip } from '@/components/ui/Chip'
 import { Screen } from '@/components/ui/Screen'
 import { useJob } from '@/features/scan/hooks'
 import { interpretResult } from '@/features/scan/mapper'
 import { colors, radius, spacing, typography } from '@/theme'
-import type { AnalysisResult, SourceReview } from '@/types/api'
-
-/** Readable labels for the content sources. */
-const SOURCE_NAME: Record<SourceReview['source'], string> = {
-  wikipedia: 'Wikipedia',
-  open_library: 'Open Library',
-  google_books: 'Google Books',
-}
+import type { AnalysisResult } from '@/types/api'
 
 /** Readable captions for how the title/author were recognized. */
 const METHOD_CAPTION: Record<AnalysisResult['method'], string> = {
@@ -192,38 +185,20 @@ export default function RezultatScanareScreen() {
         ) : null}
       </View>
 
-      {analysis.summary ? (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>About the book</Text>
-          <Text style={styles.summary}>{analysis.summary}</Text>
-        </View>
-      ) : analysis.description ? (
-        // Until Module 5 there is no generated summary, so we show the
-        // publisher's blurb — labelled as such, so it isn't mistaken for
-        // one.
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>From the publisher</Text>
-          <Text style={styles.summary}>{analysis.description}</Text>
-          {analysis.source_count > 0 ? (
-            <Text style={styles.sourceCaption}>
-              {analysis.source_count === 1
-                ? '1 source passage gathered. A written summary arrives with the next step.'
-                : `${analysis.source_count} source passages gathered. A written summary arrives with the next step.`}
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
+      {/*
+        The summary fetches itself and owns its own loading, error and
+        unavailable states — see `SummarySection`. It is the slowest thing
+        on this screen, and the book above is worth showing without it.
 
-      {analysis.reviews.length > 0 ? (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>What the sources say</Text>
-
-          <View style={styles.reviews}>
-            {analysis.reviews.map((review) => (
-              <ReviewCard key={review.id} review={review} />
-            ))}
-          </View>
-        </View>
+        Demo results never get one: `book_id` is null on the mock, and a
+        fabricated cited summary would be indistinguishable from a real one.
+      */}
+      {!isDemo ? (
+        <SummarySection
+          bookId={analysis.book_id}
+          description={analysis.description}
+          sourceCount={analysis.source_count}
+        />
       ) : null}
 
       <Button
@@ -310,31 +285,6 @@ function InProgressState({
   )
 }
 
-/** An excerpt from a source, with a link to the original. */
-function ReviewCard({ review }: { review: SourceReview }) {
-  const hasLink = review.url !== null
-
-  return (
-    <Card
-      {...(hasLink
-        ? {
-            onPress: () => {
-              void Linking.openURL(review.url as string)
-            },
-          }
-        : {})}
-    >
-      <View style={styles.reviewHeader}>
-        <Chip label={SOURCE_NAME[review.source]} tone="accent" />
-        {hasLink ? <Feather color={colors.inkFaint} name="external-link" size={14} /> : null}
-      </View>
-
-      <Text style={styles.reviewTitle}>{review.source_title}</Text>
-      <Text style={styles.reviewExcerpt}>{review.excerpt}</Text>
-    </Card>
-  )
-}
-
 const styles = StyleSheet.create({
   centered: {
     flex: 1,
@@ -406,10 +356,6 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.inkMuted,
   },
-  sourceCaption: {
-    ...typography.caption,
-    color: colors.inkFaint,
-  },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -451,36 +397,6 @@ const styles = StyleSheet.create({
   },
   needsReviewButton: {
     alignSelf: 'center',
-  },
-  section: {
-    marginTop: spacing.xxl,
-    gap: spacing.md,
-  },
-  sectionTitle: {
-    ...typography.displaySmall,
-    color: colors.ink,
-  },
-  summary: {
-    ...typography.bodyReading,
-    color: colors.ink,
-  },
-  reviews: {
-    gap: spacing.md,
-  },
-  reviewHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: spacing.sm,
-  },
-  reviewTitle: {
-    ...typography.titleCard,
-    color: colors.ink,
-    marginBottom: spacing.xs,
-  },
-  reviewExcerpt: {
-    ...typography.body,
-    color: colors.inkMuted,
   },
   stateTitle: {
     ...typography.displaySmall,

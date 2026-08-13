@@ -63,7 +63,9 @@ async def test_process_cover_marks_job_done_with_identification(
         assert job.result["title"] == "Dune"
         assert job.result["author"] == "Frank Herbert"
         assert job.result["confidence"] == 0.95
-        assert job.result["summary"] is None
+        # The generated summary is not part of a job result — it hangs off
+        # the book and is fetched from `/books/{book_id}/summary`.
+        assert "summary" not in job.result
         assert job.result["categories"] == []
         assert job.error is None
 

@@ -67,9 +67,13 @@ export interface JobPublic {
  * The result of analyzing a cover.
  *
  * Vision (Module 3) fills the recognition fields; the data fetcher
- * (Module 4) fills the catalog ones. `summary` and `reviews` stay
- * `null`/empty until Module 5 — the type carries them now, and the mocks
- * respect it, so the screens don't change when that data arrives.
+ * (Module 4) fills the catalog ones.
+ *
+ * The generated summary is deliberately **not** here. It arrives from
+ * `GET /books/{book_id}/summary` (Module 5) instead, because it takes
+ * seconds longer than the catalog metadata and the result screen should
+ * render the book immediately rather than hold everything back for it.
+ * Use `book_id` to fetch it.
  */
 export interface AnalysisResult {
   title: string
@@ -106,14 +110,10 @@ export interface AnalysisResult {
   /**
    * How many source passages were cached for this book (descriptions,
    * subjects, plot, reception). Module 5 retrieves over exactly these, so
-   * a `0` here means a summary will have nothing to work from.
+   * a `0` here means the summary request will come back unavailable —
+   * useful for skipping the request entirely.
    */
   source_count: number
-
-  /** The RAG summary. `null` until Module 5. */
-  summary: string | null
-  /** Cited excerpts backing the summary. Empty until Module 5. */
-  reviews: SourceReview[]
 }
 
 /** `app/schemas/vision.py` — `CorrectionRequest`, the body for `PATCH /jobs/{id}/correction`. */
@@ -122,11 +122,56 @@ export interface CorrectionRequest {
   author?: string | null
 }
 
-/** A critical opinion attributed to a source, for traceability. */
+/**
+ * A cited passage backing the generated summary.
+ *
+ * `app/schemas/summary.py` — `SourceReview`. The `id` is the chunk id the
+ * backend's retrieval produced; `SummaryClaim.chunk_ids` refers to it, and
+ * that link is what makes each claim tappable.
+ */
 export interface SourceReview {
   id: string
   source: 'wikipedia' | 'open_library' | 'google_books'
   source_title: string
   excerpt: string
   url: string | null
+  /** The licence the passage is published under, for attribution. */
+  license?: string | null
+}
+
+/**
+ * One statement of the summary, with the passages that support it.
+ *
+ * `app/schemas/summary.py` — `SummaryClaim`. `chunk_ids` is never empty:
+ * the backend drops any claim whose citations don't resolve, so every id
+ * here has a matching entry in `BookSummary.reviews`.
+ */
+export interface SummaryClaim {
+  text: string
+  chunk_ids: string[]
+}
+
+/**
+ * `app/schemas/summary.py` — `BookSummary`, the response for
+ * `GET /books/{book_id}/summary`.
+ *
+ * `available: false` is a normal, successful response — it means the book
+ * has no passages worth summarizing (routine for Romanian editions and
+ * small print runs), and the screen falls back to the publisher's blurb.
+ * A *failed* request is a thrown `ApiError` instead. Keeping the two apart
+ * is what lets the screen tell an honest gap from a backend problem.
+ */
+export interface BookSummary {
+  book_id: number
+  available: boolean
+  /** The summary as prose — exactly the claims, joined. Empty when unavailable. */
+  text: string
+  claims: SummaryClaim[]
+  /** The cited passages, in first-citation order. */
+  reviews: SourceReview[]
+  /** Aspects the sources didn't cover, reported rather than invented. */
+  uncovered: string[]
+  model: string | null
+  /** ISO 8601. */
+  generated_at: string | null
 }

@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     ollama_vision_model: str = "moondream"
     ollama_llm_model: str = "llama3.2"
     ollama_embedding_model: str = "nomic-embed-text"
+    # Embeddings are the one model that stays resident. It is ~275 MB, so
+    # it never contends with the vision/LLM slot, and reloading it would
+    # add seconds to every ingest on a CPU-only machine.
+    ollama_embedding_keep_alive: str = "1h"
     ollama_request_timeout_seconds: int = 120
     # Caps the vision model's reply length. Moondream rambles past the two
     # keys we ask for and gets cut mid-token, producing unparsable JSON.
@@ -109,7 +113,22 @@ class Settings(BaseSettings):
     # point; requests without one are throttled or refused.
     source_user_agent: str = "Glance/0.1 (book summary app; cristian.stoian2005@gmail.com)"
     wikipedia_timeout_seconds: float = 10.0
-    wikipedia_language: str = "en"
+    # Which Wikipedia editions to search, in order, stopping at the first
+    # that yields a confident match.
+    #
+    # English alone was the original setting, and it is wrong for this
+    # project's actual library. A Romanian edition is searched under its
+    # Romanian title, which en.wikipedia has never heard of: "Căpitan la
+    # cincisprezece ani" returns zero results there while ro.wikipedia has
+    # the article under exactly that name. Four of five Romanian titles
+    # tested returned nothing at all on en.
+    #
+    # English stays first because its articles are substantially richer —
+    # a Reception section with cited criticism, which is the whole point of
+    # this source — and an English-language book should resolve there. The
+    # Romanian edition falls through to `ro` and gets a shorter article,
+    # which still beats no article.
+    wikipedia_languages: list[str] = ["en", "ro"]
     # How long a cached book stays fresh before its sources are re-fetched.
     # Book metadata and critical reception change on the scale of months,
     # so a long TTL costs nothing and keeps repeat scans instant.
@@ -126,6 +145,37 @@ class Settings(BaseSettings):
     # Guards against a pathological Wikipedia article filling SQLite; well
     # above any real Reception section.
     source_max_passage_chars: int = 20_000
+    # Last leg of the cover-image fallback: a Wikipedia article's lead
+    # image, used when neither Google Books nor Open Library had a cover.
+    # On by default *because this build is private and not distributed* —
+    # book articles usually illustrate themselves with the publisher's
+    # cover scan, uploaded under a fair-use exemption that does not extend
+    # to a third-party app. Set to false before the app is published or
+    # shared; the other two legs are freely licensed and stay on. See the
+    # "Cover images" decision in CLAUDE.md.
+    wikipedia_cover_fallback: bool = True
+
+    # RAG (Module 5)
+    #
+    # Chunk size is a retrieval trade-off, not a model limit: smaller
+    # chunks rank more precisely but cite less context, and a cited
+    # excerpt too short to read on its own is useless on the client.
+    # ~500 tokens is roughly a long paragraph — one coherent point.
+    rag_chunk_target_tokens: int = 500
+    # Overlap keeps a statement that straddles a boundary intact in at
+    # least one chunk, so it can still be retrieved and cited whole.
+    rag_chunk_overlap_tokens: int = 50
+    # Per-aspect retrieval depth (see `RETRIEVAL_ASPECTS` in
+    # `rag_service.py`). Deliberately small: these corpora are a handful
+    # of passages, not a library, and asking for more just returns
+    # everything with worse ranking.
+    rag_retrieval_top_k: int = 4
+    # Ceiling on the context sent to the model, across all aspects.
+    rag_max_context_chunks: int = 8
+    # Output budget for the summary call. Well above what 3-6 cited
+    # sentences need, because the JSON envelope and the chunk ids are
+    # counted too, and a reply truncated mid-object parses as nothing.
+    rag_max_output_tokens: int = 2048
 
     # Vision (Module 3)
     image_max_edge_px: int = 768

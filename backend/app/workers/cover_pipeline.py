@@ -8,8 +8,12 @@ it from the three official sources on a miss.
 The data-fetching stage is deliberately **non-fatal**. Recognition can
 fail the job — with no title there is nothing to look up — but a slow or
 absent catalog cannot: the job still completes, carrying the vision
-reading and a `metadata_found=False` flag for the client to render. The
-`summary` field stays `None` until Module 5 fills it.
+reading and a `metadata_found=False` flag for the client to render.
+
+The Module 5 summary is not produced here. It hangs off the *book*, not
+the scan, and is generated on demand by `GET /books/{book_id}/summary` —
+which keeps this pipeline as fast as recognition allows and lets the
+client render the book before the summary is written.
 """
 
 from typing import Any
@@ -119,10 +123,11 @@ async def refresh_book_data(
 
         book = await _fetch_book_data(db, data_fetcher, job_id, title, author)
 
-        # Reset the catalog half unconditionally before repopulating it —
-        # including `summary`, which described the previously recognized
-        # book and would otherwise survive a correction that changed which
-        # book this is.
+        # Reset the catalog half unconditionally before repopulating it,
+        # so nothing describing the previously recognized book survives a
+        # correction that changed which book this is. `book_id` is part of
+        # that reset, which is also what re-points the client at the right
+        # book's summary.
         result: dict[str, Any] = {**(job.result or {}), **EMPTY_BOOK_FIELDS}
         if book is not None:
             result.update(book_fields(book))
@@ -137,8 +142,14 @@ async def refresh_book_data(
 
 
 # The catalog half of a job result, before anything has been fetched.
+#
+# No `summary` key: the generated summary is not part of a job result. It
+# is fetched separately from `GET /books/{book_id}/summary`, keyed on the
+# book rather than the scan, so it is shared between everyone who scans the
+# same book and survives this job being re-run. A correction therefore
+# needs no special handling for it either — the corrected title resolves to
+# a different `book_id`, and the client asks for that book's summary.
 EMPTY_BOOK_FIELDS: dict[str, Any] = {
-    "summary": None,
     "book_id": None,
     "metadata_found": False,
     "description": None,
@@ -157,8 +168,9 @@ def book_fields(book: Book) -> dict[str, Any]:
         book: The cached book.
 
     Returns:
-        The fields to merge into `job.result`. `summary` is deliberately
-        absent — it belongs to Module 5 and must not be reset here.
+        The fields to merge into `job.result`. `book_id` is the one the
+        client needs most after the visible fields: it is the key for
+        `GET /books/{book_id}/summary`.
     """
     return {
         "title": book.title,

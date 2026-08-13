@@ -48,6 +48,17 @@ export const DEFAULT_TIMEOUT_MS = 15_000
  */
 export const UPLOAD_TIMEOUT_MS = 60_000
 
+/**
+ * Timeout for `GET /books/{id}/summary` (ms).
+ *
+ * The first request for a book runs the whole RAG pipeline: chunking,
+ * embedding every chunk locally through Ollama, retrieval, then the
+ * generation call. On a CPU-only laptop the embedding step alone can take
+ * tens of seconds for a book with a long Wikipedia article. Later requests
+ * are served from the backend's cache and return immediately.
+ */
+export const SUMMARY_TIMEOUT_MS = 90_000
+
 /** Polling interval for `GET /jobs/{id}` (ms). */
 export const JOB_POLLING_INTERVAL_MS = 1_500
 

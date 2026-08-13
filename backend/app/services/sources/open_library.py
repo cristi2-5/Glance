@@ -7,6 +7,10 @@ it returns is CC0, so it carries no attribution obligation.
 Two requests are needed: `search.json` resolves a title+author to a work
 key, then `/works/{key}.json` carries the description and subjects that
 the search index does not include.
+
+`fetch_cover_by_isbn` sits outside the `ContentSource` flow: it is the
+first leg of the cover-image fallback (see `cover_fallback.py`), reached
+only when no source produced a cover at all.
 """
 
 from typing import Any
@@ -15,7 +19,7 @@ import structlog
 
 from app.core.config import Settings
 from app.models.book import SourceKind, SourceName
-from app.services.http_utils import get_json_with_retry
+from app.services.http_utils import get_json_with_retry, head_exists
 from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
 from app.services.sources.matching import MIN_TITLE_SIMILARITY, title_similarity
 
@@ -24,6 +28,11 @@ logger = structlog.get_logger(__name__)
 _SEARCH_URL = "https://openlibrary.org/search.json"
 _WORKS_URL = "https://openlibrary.org/works/{key}.json"
 _COVER_URL = "https://covers.openlibrary.org/b/id/{cover_id}-L.jpg"
+# `default=false` is what makes this usable as a probe: without it the
+# Covers API answers 200 with a blank placeholder image for every ISBN it
+# has nothing for, so there would be no way to tell a real cover from a
+# grey rectangle. With it, a missing cover is a plain 404.
+_COVER_BY_ISBN_URL = "https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false"
 
 _MAX_SUBJECTS = 20
 
@@ -182,6 +191,45 @@ class OpenLibrarySource:
             url=f"https://openlibrary.org/works/{work_key}" if work_key else None,
             license="CC0",
         )
+
+
+async def fetch_cover_by_isbn(isbn: str, settings: Settings) -> str | None:
+    """Looks a cover image up in the Covers API by ISBN alone.
+
+    This reaches a book `OpenLibrarySource.fetch` cannot: the Covers API is
+    keyed on the ISBN, so it still answers for editions whose *title* the
+    search index does not match. That combination is the normal case here —
+    Google Books supplies an ISBN for a Romanian edition it holds only a
+    bare record for, and Open Library's search misses the title entirely.
+
+    There is deliberately no title/author leg: that is exactly what
+    `OpenLibrarySource.fetch` already does, via the search hit's `cover_i`,
+    and its result is merged ahead of this one. Repeating the search here
+    would re-run the same query and return the same document.
+
+    Args:
+        isbn: An ISBN-13 or ISBN-10, as a catalog reported it.
+        settings: Application settings, for the timeout, retry budget and
+            User-Agent.
+
+    Returns:
+        The cover URL if Open Library really has an image for that ISBN,
+        `None` otherwise. Never raises.
+    """
+    url = _COVER_BY_ISBN_URL.format(isbn=isbn)
+    found = await head_exists(
+        url,
+        timeout=settings.open_library_timeout_seconds,
+        max_retries=settings.catalog_max_retries,
+        source="open_library_cover",
+        headers={"User-Agent": settings.source_user_agent},
+    )
+    if not found:
+        logger.info("open_library_cover_not_found", isbn=isbn)
+        return None
+
+    logger.info("cover_fallback_hit", provider="open_library", isbn=isbn, licensing="CC0")
+    return url
 
 
 def _flatten_description(raw: Any) -> str | None:

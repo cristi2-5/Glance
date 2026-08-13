@@ -1,8 +1,8 @@
-/** Sending the cover for analysis. */
+/** Sending the cover for analysis, and reading a book's generated summary. */
 
 import { apiClient } from '@/api/client'
-import { UPLOAD_TIMEOUT_MS } from '@/config/env'
-import type { JobCreated } from '@/types/api'
+import { SUMMARY_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } from '@/config/env'
+import type { BookSummary, JobCreated } from '@/types/api'
 
 /**
  * Description of a local file, in the shape `FormData` accepts in
@@ -46,6 +46,33 @@ export async function analyzeCover(uri: string): Promise<JobCreated> {
   const { data } = await apiClient.post<JobCreated>('/books/analyze-cover', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: UPLOAD_TIMEOUT_MS,
+  })
+
+  return data
+}
+
+/**
+ * Fetches the generated summary for a cached book.
+ *
+ * Gets its own timeout, longer than the client default: the first request
+ * for a book runs the whole RAG pipeline (chunk, embed locally, retrieve,
+ * generate), and only later ones are served from the backend's cache.
+ *
+ * Args:
+ *   bookId: The cached book id, from `AnalysisResult.book_id`.
+ *
+ * Returns:
+ *   The summary. Check `available` — `false` means the book had no
+ *   passages to summarize, which is a successful response, not an error.
+ *
+ * Raises:
+ *   ApiError: 404 if the book isn't cached, 503 if the local embedding
+ *     model or the summary provider is unreachable, 401 if the session
+ *     has expired.
+ */
+export async function getBookSummary(bookId: number): Promise<BookSummary> {
+  const { data } = await apiClient.get<BookSummary>(`/books/${bookId}/summary`, {
+    timeout: SUMMARY_TIMEOUT_MS,
   })
 
   return data

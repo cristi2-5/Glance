@@ -2,10 +2,11 @@
  * Translating a job's `result` field into the display model.
  *
  * The backend fills this shape progressively as modules land: recognition
- * in Module 3, catalog metadata in Module 4, the summary and citations in
- * Module 5. We detect whether the shape received is real and tell the
- * caller — the screen shows an explicit indicator, so we never confuse a
- * mock with a real result.
+ * in Module 3, catalog metadata in Module 4. (The Module 5 summary is not
+ * part of it — it comes from its own endpoint, keyed on `book_id`.) We
+ * detect whether the shape received is real and tell the caller — the
+ * screen shows an explicit indicator, so we never confuse a mock with a
+ * real result.
  *
  * Every field is read defensively rather than trusted, because this data
  * crosses a version boundary: a phone running a build newer than the
@@ -67,8 +68,6 @@ export function interpretResult(result: Record<string, unknown> | null): Display
       average_rating: typeof raw.average_rating === 'number' ? raw.average_rating : null,
       ratings_count: typeof raw.ratings_count === 'number' ? raw.ratings_count : null,
       source_count: typeof raw.source_count === 'number' ? raw.source_count : 0,
-      summary: raw.summary ?? null,
-      reviews: Array.isArray(raw.reviews) ? raw.reviews : [],
     },
   }
 }

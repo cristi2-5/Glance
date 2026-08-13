@@ -16,6 +16,7 @@ instead. See the "Content sources" decision in CLAUDE.md.
 
 import enum
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -42,6 +43,11 @@ class SourceKind(enum.StrEnum):
     DESCRIPTION = "description"
     SUBJECTS = "subjects"
     PLOT = "plot"
+    #: Thematic and stylistic analysis — "Themes", "Teme principale",
+    #: "Stil literar". Literary criticism about the work rather than a
+    #: recounting of it, and distinct from `RECEPTION`, which is what
+    #: reviewers said about its quality.
+    THEMES = "themes"
     RECEPTION = "reception"
 
 
@@ -77,6 +83,15 @@ class Book(Base):
         sources_fetched_at: When the `TextSource` rows were last refreshed.
             `None` means text has never been gathered for this book; the
             TTL check in `BookDataFetcher` reads this field.
+        summary_json: The generated RAG summary, stored as a serialized
+            `BookSummary` — its text, its claims, and the chunk citations
+            behind them. `None` until Module 5 has run for this book.
+        summary_generated_at: When `summary_json` was written. Compared
+            against `sources_fetched_at` to detect a summary that predates
+            a corpus refresh: the chunk ids it cites are regenerated on
+            re-ingest, so its citations may point at chunks that no longer
+            exist, and it is regenerated rather than served. This is why
+            invalidation needs no explicit call in the Module 4 write path.
         created_at: When the entry was first cached.
         updated_at: When the entry was last refreshed.
         text_sources: The prose gathered about this book.
@@ -101,6 +116,9 @@ class Book(Base):
 
     metadata_found: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sources_fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    summary_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

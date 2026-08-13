@@ -40,6 +40,73 @@ def _volume(**overrides: object) -> dict[str, object]:
     return {"items": [{"volumeInfo": info}]}
 
 
+# --- Picking the author out of Google's contributor list ---------------------
+#
+# `volumeInfo.authors` is a *contributor* list: translators, illustrators
+# and editors sit in it unlabelled. A Romanian edition of Jules Verne
+# returned four names, and the app displayed all of them as the author.
+
+
+async def test_google_books_keeps_the_author_named_on_the_cover() -> None:
+    source = GoogleBooksSource(get_settings())
+    payload = _volume(
+        title="Căpitan la cincisprezece ani",
+        authors=["Jules Verne", "Anghel Ghițulescu", "Simona Schileru", "H. Meyer"],
+    )
+
+    with respx.mock:
+        respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=payload))
+        result = await source.fetch("Căpitan la cincisprezece ani", "Jules Verne")
+
+    assert result.metadata.author == "Jules Verne"
+
+
+async def test_google_books_uses_the_catalog_spelling_of_the_author() -> None:
+    # The cover gives us who; the catalog gives us how it is spelled.
+    source = GoogleBooksSource(get_settings())
+    payload = _volume(authors=["Frank Herbert", "Some Translator"])
+
+    with respx.mock:
+        respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=payload))
+        result = await source.fetch("Dune", "frank  herbert")
+
+    assert result.metadata.author == "Frank Herbert"
+
+
+async def test_google_books_caps_the_list_when_the_cover_gave_no_author() -> None:
+    # Nothing to match against, so co-authorship is preserved but a cast of
+    # contributors is not.
+    source = GoogleBooksSource(get_settings())
+    payload = _volume(authors=["A One", "B Two", "C Three", "D Four"])
+
+    with respx.mock:
+        respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=payload))
+        result = await source.fetch("Dune", None)
+
+    assert result.metadata.author == "A One, B Two"
+
+
+async def test_google_books_keeps_genuine_co_authors() -> None:
+    source = GoogleBooksSource(get_settings())
+    payload = _volume(title="Good Omens", authors=["Terry Pratchett", "Neil Gaiman"])
+
+    with respx.mock:
+        respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=payload))
+        result = await source.fetch("Good Omens", None)
+
+    assert result.metadata.author == "Terry Pratchett, Neil Gaiman"
+
+
+async def test_google_books_volume_without_authors_reports_none() -> None:
+    source = GoogleBooksSource(get_settings())
+
+    with respx.mock:
+        respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=_volume(authors=[])))
+        result = await source.fetch("Dune", "Frank Herbert")
+
+    assert result.metadata.author is None
+
+
 async def test_google_books_maps_every_metadata_field() -> None:
     source = GoogleBooksSource(get_settings())
 
@@ -241,15 +308,38 @@ Citations follow.
 """
 
 
-def _wiki_mock(search_title: str = "Dune", extract: str = _ARTICLE) -> None:
-    """Routes both Wikipedia calls: the search, then the extract."""
+# Any language edition. The source searches `wikipedia_languages` in order
+# (en, then ro), so a mock pinned to `en.wikipedia.org` leaves the second
+# request unrouted.
+_WIKI_ANY_LANG = r"https://\w+\.wikipedia\.org/w/api\.php"
+
+
+def _wiki_mock(
+    search_title: str = "Dune",
+    extract: str = _ARTICLE,
+    per_language: dict[str, list[str]] | None = None,
+) -> None:
+    """Routes both Wikipedia calls, across every language edition.
+
+    Args:
+        search_title: The single article title every edition returns.
+        extract: The article text returned for any extract request.
+        per_language: Overrides `search_title` with a list of result titles
+            per language code, for testing the fallback from one edition to
+            the next.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
+        language = request.url.host.split(".")[0]
         if request.url.params.get("list") == "search":
-            return httpx.Response(200, json={"query": {"search": [{"title": search_title}]}})
+            if per_language is not None:
+                titles = per_language.get(language, [])
+            else:
+                titles = [search_title]
+            return httpx.Response(200, json={"query": {"search": [{"title": t} for t in titles]}})
         return httpx.Response(200, json={"query": {"pages": {"1": {"extract": extract}}}})
 
-    respx.get(_WIKI_API_URL).mock(side_effect=handler)
+    respx.get(url__regex=_WIKI_ANY_LANG).mock(side_effect=handler)
 
 
 async def test_wikipedia_extracts_only_reception_and_plot_sections() -> None:
@@ -292,7 +382,7 @@ async def test_wikipedia_no_article_is_a_no_match_not_a_failure() -> None:
     source = WikipediaSource(get_settings())
 
     with respx.mock:
-        respx.get(_WIKI_API_URL).mock(
+        respx.get(url__regex=_WIKI_ANY_LANG).mock(
             return_value=httpx.Response(200, json={"query": {"search": []}})
         )
         result = await source.fetch("Some Obscure Edition")
@@ -326,10 +416,144 @@ async def test_wikipedia_timeout_reports_unavailable() -> None:
     source = WikipediaSource(get_settings())
 
     with respx.mock:
-        respx.get(_WIKI_API_URL).mock(side_effect=httpx.ConnectTimeout("slow"))
+        respx.get(url__regex=_WIKI_ANY_LANG).mock(side_effect=httpx.ConnectTimeout("slow"))
         result = await source.fetch("Dune")
 
     assert result.available is False
+
+
+# --- Multi-language search, and rejecting the wrong kind of article ----------
+#
+# Added after a real failure: "Căpitan la cincisprezece ani" is on
+# ro.wikipedia under exactly that title, and the source — pinned to English
+# — reported no article, so the book got no summary at all.
+
+
+async def test_wikipedia_falls_back_to_the_next_language() -> None:
+    # A Romanian edition: en.wikipedia has never heard of the title, ro has
+    # the article under precisely that name.
+    source = WikipediaSource(get_settings())
+    romanian = "Căpitan la cincisprezece ani"
+
+    with respx.mock:
+        _wiki_mock(extract=_ARTICLE, per_language={"en": [], "ro": [romanian]})
+        result = await source.fetch(romanian, "Jules Verne")
+
+    assert result.matched is True
+    assert result.record_ref == f"ro:{romanian}"
+    assert result.url.startswith("https://ro.wikipedia.org/wiki/")
+
+
+async def test_wikipedia_prefers_the_first_language_that_matches() -> None:
+    # An English-language book must resolve on en and never reach ro, whose
+    # article would be shorter and whose scores are not comparable anyway.
+    source = WikipediaSource(get_settings())
+
+    with respx.mock:
+        _wiki_mock(per_language={"en": ["Dune (novel)"], "ro": ["Dune (roman)"]})
+        result = await source.fetch("Dune", "Frank Herbert")
+
+    assert result.record_ref == "en:Dune (novel)"
+
+
+async def test_wikipedia_rejects_a_film_article() -> None:
+    # The disambiguator is stripped before scoring, so "Moarte pe Nil (film
+    # din 2022)" scores 100 against the novel. Ingesting it would build a
+    # cited summary of the film.
+    source = WikipediaSource(get_settings())
+
+    with respx.mock:
+        _wiki_mock(per_language={"en": [], "ro": ["Moarte pe Nil (film din 2022)"]})
+        result = await source.fetch("Moarte pe Nil", "Agatha Christie")
+
+    assert result.matched is False
+
+
+async def test_wikipedia_rejects_an_unrelated_disambiguated_article() -> None:
+    # The reason this is a whitelist and not a blacklist: "Câmp (river)"
+    # scores 80 against a book called "Câmpul", and "river" would never
+    # have been on a list of things to exclude.
+    source = WikipediaSource(get_settings())
+
+    with respx.mock:
+        _wiki_mock(per_language={"en": ["Câmp (river)"], "ro": ["Câmp (river)"]})
+        result = await source.fetch("Câmpul", None)
+
+    assert result.matched is False
+
+
+async def test_wikipedia_prefers_a_confirmed_book_article() -> None:
+    # "Baltagul (roman)" is the novel; a bare "Baltagul" could be anything.
+    source = WikipediaSource(get_settings())
+
+    with respx.mock:
+        _wiki_mock(per_language={"en": [], "ro": ["Baltagul", "Baltagul (roman)"]})
+        result = await source.fetch("Baltagul", "Mihail Sadoveanu")
+
+    assert result.record_ref == "ro:Baltagul (roman)"
+
+
+async def test_wikipedia_accepts_an_author_named_disambiguator() -> None:
+    source = WikipediaSource(get_settings())
+
+    with respx.mock:
+        _wiki_mock(per_language={"en": ["Michael Strogoff (Jules Verne)"]})
+        result = await source.fetch("Michael Strogoff", "Jules Verne")
+
+    assert result.matched is True
+
+
+async def test_wikipedia_query_carries_no_english_filler() -> None:
+    # The bug: the query appended the English word "novel", and Wikipedia
+    # ANDs its search terms — so on ro.wikipedia, where no article contains
+    # it, every result was filtered out.
+    source = WikipediaSource(get_settings())
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("list") == "search":
+            seen.append(str(request.url.params.get("srsearch")))
+            return httpx.Response(200, json={"query": {"search": []}})
+        return httpx.Response(200, json={"query": {"pages": {}}})
+
+    with respx.mock:
+        respx.get(url__regex=_WIKI_ANY_LANG).mock(side_effect=handler)
+        await source.fetch("Baltagul", "Mihail Sadoveanu")
+
+    assert seen
+    for query in seen:
+        assert "novel" not in query.lower()
+        assert "book" not in query.lower()
+        assert query == "Baltagul Mihail Sadoveanu"
+
+
+async def test_wikipedia_extracts_romanian_sections() -> None:
+    # Romanian articles resolved correctly and then produced *zero*
+    # passages, because the heading vocabulary was English-only. Note the
+    # diacritics: a raw `[a-z]+` split turns "Acțiune" into "ac" + "iune".
+    source = WikipediaSource(get_settings())
+    article = (
+        "Introducere.\n\n"
+        "== Rezumat ==\n\nDick Sand preia comanda navei.\n\n"
+        "== Teme principale ==\n\nSclavia și maturizarea.\n\n"
+        "== Aprecieri critice ==\n\nCriticii au lăudat ritmul romanului.\n\n"
+        "== Traduceri în limba română ==\n\nO listă de ediții.\n\n"
+        "== Ecranizări ==\n\nUn film din 1974.\n"
+    )
+
+    with respx.mock:
+        _wiki_mock(extract=article, per_language={"en": [], "ro": ["Baltagul (roman)"]})
+        result = await source.fetch("Baltagul", "Mihail Sadoveanu")
+
+    by_kind = {p.kind: p for p in result.passages}
+    assert SourceKind.PLOT in by_kind
+    assert SourceKind.THEMES in by_kind
+    assert SourceKind.RECEPTION in by_kind
+    assert "lăudat" in by_kind[SourceKind.RECEPTION].content
+
+    headings = {p.heading for p in result.passages}
+    assert "Traduceri în limba română" not in headings
+    assert "Ecranizări" not in headings
 
 
 # --- Tie-breaking between equally-titled candidates --------------------------

@@ -13,7 +13,7 @@ from app.core.config import Settings, get_settings
 from app.models.book import Book, SourceKind, SourceName, TextSource
 from app.services.data_fetcher import BookDataFetcher, normalize_key
 from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
-from tests.fakes import FakeContentSource
+from tests.fakes import FakeContentSource, FakeCoverFallback
 
 
 @pytest.fixture
@@ -58,9 +58,17 @@ def _wikipedia() -> SourceResult:
     )
 
 
-def _fetcher(*sources: FakeContentSource, settings: Settings | None = None) -> BookDataFetcher:
+def _fetcher(
+    *sources: FakeContentSource,
+    settings: Settings | None = None,
+    cover_fallback: FakeCoverFallback | None = None,
+) -> BookDataFetcher:
     """Builds a fetcher over the given fake sources."""
-    return BookDataFetcher(sources=list(sources), settings=settings or get_settings())
+    return BookDataFetcher(
+        sources=list(sources),
+        settings=settings or get_settings(),
+        cover_fallback=cover_fallback,
+    )
 
 
 # --- Normalization ----------------------------------------------------------
@@ -370,6 +378,106 @@ async def test_an_empty_entry_is_still_cached_within_its_short_ttl(
     await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
 
     assert len(google.calls) == 1
+
+
+# --- Cover-image fallback ---------------------------------------------------
+#
+# The wiring only. The chain's own legs — Open Library by ISBN, then the
+# Wikipedia article image — are tested against mocked HTTP in
+# `test_cover_fallback.py`.
+
+
+async def test_a_book_with_a_cover_never_reaches_the_fallback(db: AsyncSession) -> None:
+    fallback = FakeCoverFallback("https://fallback.test/should-not-be-used.jpg")
+    google = FakeContentSource(SourceName.GOOGLE_BOOKS, _google())
+
+    book = await _fetcher(google, cover_fallback=fallback).fetch(db, "Dune", "Frank Herbert")
+
+    assert book.cover_url == "https://books.test/dune.jpg"
+    assert fallback.calls == [], "no request may be made when a source already had a cover"
+
+
+async def test_a_recovered_cover_is_cached_like_any_other(db: AsyncSession) -> None:
+    fallback = FakeCoverFallback("https://covers.test/baltagul.jpg")
+    google = FakeContentSource(
+        SourceName.GOOGLE_BOOKS,
+        _google(cover_url=None, description="A shepherd's widow.", isbn_13="9789734603459"),
+    )
+    fetcher = _fetcher(google, cover_fallback=fallback)
+
+    book = await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
+    assert book.cover_url == "https://covers.test/baltagul.jpg"
+
+    # And it is served from SQLite afterwards, not re-resolved.
+    again = await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
+    assert again.cover_url == "https://covers.test/baltagul.jpg"
+    assert len(fallback.calls) == 1
+
+
+async def test_the_fallback_receives_the_isbns_and_the_wikipedia_article(
+    db: AsyncSession,
+) -> None:
+    # The article title comes off the Wikipedia result's `record_ref`, which
+    # exists precisely so the last leg doesn't pay for a second search.
+    fallback = FakeCoverFallback()
+    google = FakeContentSource(
+        SourceName.GOOGLE_BOOKS,
+        _google(cover_url=None, isbn_13="9780441013593", isbn_10="0441013597"),
+    )
+    wiki = FakeContentSource(
+        SourceName.WIKIPEDIA,
+        SourceResult(
+            source=SourceName.WIKIPEDIA,
+            passages=[SourcePassage(kind=SourceKind.RECEPTION, content="Won the Hugo.")],
+            record_ref="Dune (novel)",
+        ),
+    )
+
+    await _fetcher(google, wiki, cover_fallback=fallback).fetch(db, "Dune", "Frank Herbert")
+
+    assert fallback.calls == [("9780441013593", "0441013597", "Dune (novel)")]
+
+
+async def test_an_unmatched_wikipedia_result_offers_no_article(db: AsyncSession) -> None:
+    # There is no article to read an image from, so the last leg must not
+    # be handed a stale ref from some earlier book.
+    fallback = FakeCoverFallback()
+    google = FakeContentSource(SourceName.GOOGLE_BOOKS, _google(cover_url=None, isbn_13=None))
+    wiki = FakeContentSource(SourceName.WIKIPEDIA)
+
+    await _fetcher(google, wiki, cover_fallback=fallback).fetch(db, "Dune", "Frank Herbert")
+
+    assert fallback.calls == [(None, None, None)]
+
+
+async def test_a_cover_recovered_by_the_fallback_counts_as_metadata_found(
+    db: AsyncSession,
+) -> None:
+    # A bare Google Books record plus an Open Library cover is no longer an
+    # empty result: there is now something to show.
+    fallback = FakeCoverFallback("https://covers.test/baltagul.jpg")
+    bare = SourceResult(
+        source=SourceName.GOOGLE_BOOKS,
+        metadata=BookMetadata(title="Baltagul", author="Mihail Sadoveanu", isbn_13="9789734603459"),
+    )
+    book = await _fetcher(
+        FakeContentSource(SourceName.GOOGLE_BOOKS, bare), cover_fallback=fallback
+    ).fetch(db, "Baltagul", "Mihail Sadoveanu")
+
+    assert book.metadata_found is True
+    assert book.cover_url == "https://covers.test/baltagul.jpg"
+
+
+async def test_a_fallback_that_finds_nothing_leaves_the_book_untouched(
+    db: AsyncSession,
+) -> None:
+    fallback = FakeCoverFallback(None)
+    google = FakeContentSource(SourceName.GOOGLE_BOOKS, _google(cover_url=None))
+
+    book = await _fetcher(google, cover_fallback=fallback).fetch(db, "Dune", "Frank Herbert")
+
+    assert book.cover_url is None
+    assert book.description == "A desert planet.", "the rest of the fetch is unaffected"
 
 
 async def test_a_populated_entry_keeps_the_long_ttl(db: AsyncSession) -> None:

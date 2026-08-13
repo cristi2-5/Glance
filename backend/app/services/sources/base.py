@@ -62,6 +62,11 @@ class SourceResult:
         passages: The prose it carries, for the RAG corpus.
         url: The canonical page for the book on this source, for citation.
         license: The licence the passages are published under.
+        record_ref: The source's own identifier for the record this result
+            came from, so a follow-up request can skip re-resolving it.
+            Only Wikipedia sets it — with the article title, which the
+            cover-image fallback needs and which cost a search request to
+            find. The catalogs have no second endpoint to reach for.
         matched: `False` when the source was reached but has no such book.
         available: `False` when the source could not be reached at all
             (timeout, 5xx, quota). Callers must not cache this outcome.
@@ -72,6 +77,7 @@ class SourceResult:
     passages: list[SourcePassage] = field(default_factory=list)
     url: str | None = None
     license: str | None = None
+    record_ref: str | None = None
     matched: bool = True
     available: bool = True
 
