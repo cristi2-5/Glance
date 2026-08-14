@@ -16,6 +16,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { ApiError } from '@/api/errors'
 import { BookCover } from '@/components/book/BookCover'
 import { RatingStars } from '@/components/book/RatingStele'
+import { ReadingStatusPicker } from '@/components/book/ReadingStatusPicker'
 import { SummarySection } from '@/components/book/SummarySection'
 import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
@@ -23,7 +24,7 @@ import { Chip } from '@/components/ui/Chip'
 import { Screen } from '@/components/ui/Screen'
 import { useJob } from '@/features/scan/hooks'
 import { interpretResult } from '@/features/scan/mapper'
-import { colors, radius, spacing, typography } from '@/theme'
+import { colors, radius, space, spacing, textFit, typography } from '@/theme'
 import type { AnalysisResult } from '@/types/api'
 
 /** Readable captions for how the title/author were recognized. */
@@ -201,6 +202,26 @@ export default function RezultatScanareScreen() {
         />
       ) : null}
 
+      {/*
+        The scan is already in the reader's library by the time this
+        renders — the pipeline records it. The only control here is the
+        status, because it is the only thing anyone can honestly answer
+        seconds after photographing a cover. The rating and the journal
+        live on the book screen, reached from the profile.
+
+        Skipped on a demo result for the same reason as the summary: with
+        `book_id` null there is no book to write against, and a control
+        that silently goes nowhere is worse than no control at all.
+      */}
+      {!isDemo && analysis.book_id !== null ? (
+        <View style={styles.statusBlock}>
+          <Text {...textFit.sectionTitle} style={styles.statusHeading}>
+            Add to your reading
+          </Text>
+          <ReadingStatusPicker bookId={analysis.book_id} />
+        </View>
+      ) : null}
+
       <Button
         label="Scan another book"
         onPress={() => router.replace('/scan/camera')}
@@ -286,6 +307,14 @@ function InProgressState({
 }
 
 const styles = StyleSheet.create({
+  statusBlock: {
+    gap: space[3],
+    marginTop: space[7],
+  },
+  statusHeading: {
+    ...typography.displaySmall,
+    color: colors.ink,
+  },
   centered: {
     flex: 1,
     alignItems: 'center',

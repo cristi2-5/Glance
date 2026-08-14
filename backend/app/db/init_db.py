@@ -31,7 +31,15 @@ from app.db.session import Base, engine
 
 # Required import: registers the models on `Base.metadata` before
 # `create_all`. Without it, their tables would not be created.
-from app.models import Book, Job, RefreshToken, TextSource, User  # noqa: F401
+from app.models import (  # noqa: F401
+    Book,
+    Job,
+    JournalEntry,
+    LibraryEntry,
+    RefreshToken,
+    TextSource,
+    User,
+)
 
 logger = structlog.get_logger(__name__)
 

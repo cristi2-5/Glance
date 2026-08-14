@@ -26,6 +26,7 @@ export default function AppLayout() {
       }}
     >
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="book/[bookId]" />
       <Stack.Screen name="scan/camera" options={{ animation: 'slide_from_bottom' }} />
       <Stack.Screen name="scan/[jobId]" />
       <Stack.Screen name="scan/correct/[jobId]" options={{ animation: 'slide_from_bottom' }} />

@@ -1,15 +1,19 @@
 """Tests for `app.workers.cover_pipeline.process_cover`."""
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.exceptions import CoverNotRecognized
 from app.models.book import SourceKind, SourceName
 from app.models.job import Job, JobStatus
+from app.models.library import LibraryEntry, ReadingStatus
+from app.schemas.library import LibraryEntryUpdate
 from app.schemas.vision import CoverIdentification
+from app.services import library_service
 from app.services.data_fetcher import BookDataFetcher
 from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
-from app.workers.cover_pipeline import process_cover
+from app.workers.cover_pipeline import process_cover, refresh_book_data
 from tests.fakes import FakeContentSource
 
 
@@ -206,3 +210,181 @@ async def test_process_cover_survives_a_data_fetcher_that_explodes(
         assert job.status == JobStatus.DONE.value
         assert job.result["title"] == "Dune"
         assert job.result["metadata_found"] is False
+
+
+def _dune_fetcher() -> BookDataFetcher:
+    """A fetcher scripted to resolve Dune from a single catalog."""
+    return BookDataFetcher(
+        sources=[
+            FakeContentSource(
+                SourceName.GOOGLE_BOOKS,
+                SourceResult(
+                    source=SourceName.GOOGLE_BOOKS,
+                    metadata=BookMetadata(
+                        title="Dune",
+                        author="Frank Herbert",
+                        description="A desert planet.",
+                        categories=["Fiction"],
+                    ),
+                    passages=[
+                        SourcePassage(kind=SourceKind.DESCRIPTION, content="A desert planet.")
+                    ],
+                ),
+            )
+        ],
+        settings=get_settings(),
+    )
+
+
+async def test_process_cover_records_the_scan_in_the_library(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A completed scan lands in the user's history without being asked.
+
+    Nobody hand-curates a library in an app whose whole purpose is
+    photographing covers. If the pipeline does not write this row, the
+    history stays empty forever and every counter derived from it reads
+    zero on an account that has scanned dozens of books.
+    """
+    job_id = await _create_pending_job(db_session_factory)
+
+    await process_cover(
+        job_id, b"fake-image-bytes", db_session_factory, _identified_dune(), _dune_fetcher()  # type: ignore[arg-type]
+    )
+
+    async with db_session_factory() as db:
+        job = await db.get(Job, job_id)
+        assert job is not None and job.result is not None
+
+        entries = list(await db.scalars(select(LibraryEntry)))
+        assert len(entries) == 1
+        assert entries[0].user_id == job.user_id
+        assert entries[0].book_id == job.result["book_id"]
+        assert entries[0].status == ReadingStatus.SCANNED.value
+        assert entries[0].scan_count == 1
+
+
+async def test_scanning_the_same_cover_twice_leaves_one_history_entry(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Two scans of one cover are one book in the history, not two.
+
+    The end-to-end form of the unique constraint: it has to survive the
+    pipeline, which opens its own session per run and cannot see the
+    previous one's identity map.
+    """
+    fetcher = _dune_fetcher()
+
+    for _ in range(2):
+        job_id = await _create_pending_job(db_session_factory)
+        await process_cover(
+            job_id, b"fake-image-bytes", db_session_factory, _identified_dune(), fetcher  # type: ignore[arg-type]
+        )
+
+    async with db_session_factory() as db:
+        entries = list(await db.scalars(select(LibraryEntry)))
+
+    assert len(entries) == 1
+    assert entries[0].scan_count == 2
+
+
+async def test_a_failed_scan_records_nothing(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A cover that was never recognized has no book to record."""
+    job_id = await _create_pending_job(db_session_factory)
+    vision_service = _FakeVisionService(error=CoverNotRecognized("Could not read the cover."))
+
+    await process_cover(
+        job_id, b"fake-image-bytes", db_session_factory, vision_service, _dune_fetcher()  # type: ignore[arg-type]
+    )
+
+    async with db_session_factory() as db:
+        assert list(await db.scalars(select(LibraryEntry))) == []
+
+
+async def test_correction_moves_the_history_to_the_corrected_book(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The misidentified book leaves the library; the corrected one enters it.
+
+    Without this, correcting a title leaves a book the user never held in
+    their history — and, in Module 6, in the profile vector that decides
+    what they get recommended.
+    """
+    job_id = await _create_pending_job(db_session_factory)
+    await process_cover(
+        job_id, b"fake-image-bytes", db_session_factory, _identified_dune(), _dune_fetcher()  # type: ignore[arg-type]
+    )
+
+    corrected_fetcher = BookDataFetcher(
+        sources=[
+            FakeContentSource(
+                SourceName.GOOGLE_BOOKS,
+                SourceResult(
+                    source=SourceName.GOOGLE_BOOKS,
+                    metadata=BookMetadata(title="Baltagul", author="Mihail Sadoveanu"),
+                    passages=[SourcePassage(kind=SourceKind.DESCRIPTION, content="Un roman.")],
+                ),
+            )
+        ],
+        settings=get_settings(),
+    )
+    await refresh_book_data(
+        job_id, "Baltagul", "Mihail Sadoveanu", db_session_factory, corrected_fetcher
+    )
+
+    async with db_session_factory() as db:
+        job = await db.get(Job, job_id)
+        assert job is not None and job.result is not None
+
+        entries = list(await db.scalars(select(LibraryEntry)))
+        assert len(entries) == 1
+        assert entries[0].book_id == job.result["book_id"]
+
+
+async def test_correction_keeps_a_book_the_user_already_rated(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A rated book is the user's, even if a correction says the scan was wrong.
+
+    They may have reached it by mistake, but they have since said
+    something about it, and deleting that is a data loss the correction
+    never asked for.
+    """
+    job_id = await _create_pending_job(db_session_factory)
+    await process_cover(
+        job_id, b"fake-image-bytes", db_session_factory, _identified_dune(), _dune_fetcher()  # type: ignore[arg-type]
+    )
+
+    async with db_session_factory() as db:
+        job = await db.get(Job, job_id)
+        assert job is not None and job.result is not None
+        scanned_book_id = job.result["book_id"]
+        await library_service.update_entry(
+            db, job.user_id, scanned_book_id, LibraryEntryUpdate(rating=5)
+        )
+
+    corrected_fetcher = BookDataFetcher(
+        sources=[
+            FakeContentSource(
+                SourceName.GOOGLE_BOOKS,
+                SourceResult(
+                    source=SourceName.GOOGLE_BOOKS,
+                    metadata=BookMetadata(title="Baltagul", author="Mihail Sadoveanu"),
+                    passages=[SourcePassage(kind=SourceKind.DESCRIPTION, content="Un roman.")],
+                ),
+            )
+        ],
+        settings=get_settings(),
+    )
+    await refresh_book_data(
+        job_id, "Baltagul", "Mihail Sadoveanu", db_session_factory, corrected_fetcher
+    )
+
+    async with db_session_factory() as db:
+        entries = {entry.book_id: entry for entry in await db.scalars(select(LibraryEntry))}
+
+    assert scanned_book_id in entries
+    assert entries[scanned_book_id].rating == 5
+    assert len(entries) == 2

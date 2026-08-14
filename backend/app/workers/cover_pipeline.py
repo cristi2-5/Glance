@@ -14,6 +14,12 @@ The Module 5 summary is not produced here. It hangs off the *book*, not
 the scan, and is generated on demand by `GET /books/{book_id}/summary` —
 which keeps this pipeline as fast as recognition allows and lets the
 client render the book before the summary is written.
+
+Module 6 adds one step at the very end: the scan is recorded in the
+user's library. It runs *after* the job has been committed and is
+swallowed on failure, for the same reason the fetch stage is — the user
+waited 30-120 s for a recognition, and a history row that failed to write
+must not turn that into a failed scan.
 """
 
 from typing import Any
@@ -24,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.exceptions import GlanceError
 from app.models.book import Book
 from app.models.job import Job, JobStatus
+from app.services import library_service
 from app.services.data_fetcher import BookDataFetcher
 from app.services.vision_service import VisionService
 
@@ -89,6 +96,12 @@ async def process_cover(
         job.status = JobStatus.DONE.value
         await db.commit()
 
+        # After the job is finished, never before: the library entry is a
+        # convenience, and failing to write it must not cost the user the
+        # scan they waited 30-120 s for.
+        if book is not None:
+            await _record_in_library(db, job.user_id, book.id, job_id)
+
 
 async def refresh_book_data(
     job_id: int,
@@ -121,6 +134,7 @@ async def refresh_book_data(
             logger.error("job_not_found_in_refresh", job_id=job_id)
             return
 
+        previous_book_id = (job.result or {}).get("book_id")
         book = await _fetch_book_data(db, data_fetcher, job_id, title, author)
 
         # Reset the catalog half unconditionally before repopulating it,
@@ -139,6 +153,55 @@ async def refresh_book_data(
         job.result = result
         job.status = JobStatus.DONE.value
         await db.commit()
+
+        # The first scan recorded the *misidentified* book in this user's
+        # library. A correction says that book was never in their hands,
+        # so it should not stay in their history — nor teach Module 6
+        # anything. Only an untouched scan artifact is discarded; if they
+        # rated or noted it in the meantime, it is theirs and it stays.
+        new_book_id = book.id if book is not None else None
+        if isinstance(previous_book_id, int) and previous_book_id != new_book_id:
+            await _discard_library_artifact(db, job.user_id, previous_book_id, job_id)
+        if book is not None:
+            await _record_in_library(db, job.user_id, book.id, job_id)
+
+
+async def _record_in_library(db: AsyncSession, user_id: int, book_id: int, job_id: int) -> None:
+    """Records the scan in the user's library, swallowing any failure.
+
+    Non-fatal by design, like the metadata fetch above it: the job has
+    already completed and been committed, and a history row that failed
+    to write is a smaller loss than a scan reported as failed.
+
+    Args:
+        db: The pipeline's database session.
+        user_id: The user who scanned.
+        book_id: The book the scan resolved to.
+        job_id: The job id, for log correlation.
+    """
+    try:
+        await library_service.record_scan(db, user_id, book_id)
+    except Exception:
+        logger.exception("library_record_failed", job_id=job_id, book_id=book_id)
+        await db.rollback()
+
+
+async def _discard_library_artifact(
+    db: AsyncSession, user_id: int, book_id: int, job_id: int
+) -> None:
+    """Drops the superseded scan's library entry, swallowing any failure.
+
+    Args:
+        db: The pipeline's database session.
+        user_id: The user whose library to clean.
+        book_id: The previously recognized book.
+        job_id: The job id, for log correlation.
+    """
+    try:
+        await library_service.discard_scan_artifact(db, user_id, book_id)
+    except Exception:
+        logger.exception("library_artifact_discard_failed", job_id=job_id, book_id=book_id)
+        await db.rollback()
 
 
 # The catalog half of a job result, before anything has been fetched.

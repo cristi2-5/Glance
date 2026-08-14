@@ -25,13 +25,16 @@ Client (mobile app)
       │  POST /books/analyze-cover (image + JWT)  →  202 { job_id }
       │  GET  /jobs/{job_id}                        →  poll until status=done
       │  GET  /books/{book_id}/summary              →  cited RAG summary, on demand
+      │  PUT  /books/{book_id}/library              →  reading status, rating
+      │  GET/POST /books/{book_id}/journal          →  dated reading notes
+      │  GET  /users/me/library|stats|preferences   →  history, counters, derived tastes
       ▼
 FastAPI backend (local, on laptop)
       │
       ├── qwen/qwen3.6-27b (via Groq)  → title/author from the cover, runs first    [cloud, seconds]
       ├── RapidOCR (ONNX)              → fallback when Groq's guess is unconfirmed  [fast, <1 s]
       ├── Google Books / Open Library / Wikipedia → metadata + text about the book
-      ├── SQLite                       → users, jobs, books, sources, reading_history, preferences
+      ├── SQLite                       → users, jobs, books, sources, library_entries, journal_entries
       ├── ChromaDB                     → embeddings (nomic-embed-text, local via Ollama), power both RAG *and* recommendations
       │                                  retrieval is ALWAYS filtered on book_id — see the decision below
       └── openai/gpt-oss-120b (via Groq) → summary generated from retrieved context, one citation per claim
@@ -236,7 +239,7 @@ backend/
 │   │       ├── jobs.py             # GET /jobs/{id}
 │   │       └── users.py            # profile, history, preferences, recommendations
 │   ├── models/                     # SQLAlchemy: User, RefreshToken, Job, Book,
-│   │                               #   TextSource, ReadingHistory, Preference
+│   │                               #   TextSource, LibraryEntry, JournalEntry
 │   ├── schemas/                    # Pydantic (request/response)
 │   ├── services/
 │   │   ├── ocr_service.py          # RapidOCR + image preprocessing
@@ -255,6 +258,8 @@ backend/
 │   │   ├── embeddings.py           # nomic-embed-text via Ollama — always local
 │   │   ├── vector_store.py         # Chroma + the mandatory book_id filter
 │   │   ├── rag_service.py          # ingest, retrieve, synthesize, verify citations
+│   │   ├── library_service.py      # history, status, ratings, derived preferences
+│   │   ├── journal_service.py      # dated reading notes, owned via the library entry
 │   │   └── recommendation_service.py
 │   ├── workers/
 │   │   └── cover_pipeline.py       # the full job: OCR → fetch → ingest → summary
@@ -297,7 +302,21 @@ One module per session. Don't move on until the tests pass.
       **The summary *is* its claims.** The model returns a list of `{text, chunk_ids}` and the prose is derived server-side by joining them, rather than returning prose with `[1]` markers the client would have to parse back apart. The two cannot disagree, and "every sentence cites something" becomes checkable instead of hoped-for.
       **The prompt is not the enforcement.** Asking a model not to hallucinate is a request; the failures it doesn't catch are exactly the fluent, plausible ones. So every returned claim is verified against the chunks actually retrieved, and one citing nothing — or citing an id that wasn't in the context — is **dropped before the client sees it**. If nothing survives, the response is `available=false` and the client falls back to the publisher's blurb. What this deliberately does *not* claim is that a claim's text is faithful to the chunk it cites: that is a semantic judgement needing a second model whose errors we could not check either. The honest boundary is traceability, and the client shows the passage so the reader can judge.
       **An unavailable summary is a `200`, not an error.** `available=false` means "nothing to summarize"; a 503 means "the provider was unreachable, try again". The client renders those differently, and collapsing them would either hide a real outage or make an honest gap look broken. A failed generation is also never cached — otherwise a bad moment would deny the book a summary until its sources next expire, up to 30 days.
-- [ ] **Module 6: Recommendations** — `ReadingHistory`, `Preference`, profile vector (weighted average by user rating), candidate generation from Chroma, filtering by genre and already-read books, score + explanation ("because you liked X"). Purely content-based — single user, guaranteed cold start, no collaborative filtering.
+- [x] **Module 6a: Personal library + reading journal** — *(backend + client, both done)* `LibraryEntry` (one row per user×book: status, rating, scan bookkeeping) auto-recorded by the cover pipeline, plus `JournalEntry` (dated notes hanging off it). `GET/PUT/DELETE /books/{id}/library`, `GET/POST/PATCH/DELETE /books/{id}/journal`, `GET /users/me/library|stats|preferences`. On the client: real profile counters, derived preferences, a tappable history, a status picker on the scan result, and a book screen with rating and journal.
+      *Done when:* a rescan doesn't duplicate the history and one reader's library and journal are invisible to another. **Done** — 300 tests green, `mypy app/` clean, `ruff`/`black` clean, `tsc --noEmit` clean, `expo export` bundles. See `backend/docs/module-6a-library.md` (local, gitignored).
+      **This had to come before recommendations, because none of their inputs existed.** Module 6 was specified as "profile vector weighted by user rating" — and before this module there was no link at all between a `User` and a `Book`. A `Job` has a `user_id`, but a job is the technical record of one scan: it duplicates on every rescan, holds the vision reading rather than an opinion, and is finished being useful once the client reads it. There were no ratings to weight by.
+      **`(user_id, book_id)` is unique, and that is the whole point.** Rescanning a cover is the normal case, not an edge one. Without the constraint the same book appears three times in the history, the counters read three, and the profile vector weighs it three times over.
+      **The reading journal is rows, not a column — and that was a correction made on use.** 6a first shipped a single `review` field, asked for on the scan result screen. Wrong twice: it was requested *seconds after the cover was photographed*, the one moment a reader has nothing to say, and it could hold only one opinion, overwritten each time. Notes are now dated `journal_entries` shown **oldest first** — reversing them would put a conclusion above the doubt that produced it, which is the one thing a journal is for. An edit moves `updated_at` only; moving `created_at` would silently reorder the timeline on every typo fix.
+      **Capture and reflection are different screens.** The scan result carries only the reading status — the one thing anyone can honestly answer right after a photo. Rating and journal live on the book screen, reached from the profile.
+      **Nothing the reader writes enters the RAG corpus.** Module 5 guarantees every claim is traceable to a cited official source; if a journal note became a citable chunk, a summary could quote the reader back at themselves formatted as criticism — fluent, correctly cited, and false.
+      **Journal ownership resolves through the library entry, never by note id.** A note id is a small integer and trivially guessable, so `_owned_note` filters on `library_entry_id` as well as `id` — another reader's note simply does not match, rather than being fetched and then judged, which is the shape that keeps working until someone leaves the judgement out.
+      **Absent ≠ null in a partial update.** `LibraryEntryUpdate` reads `model_fields_set`, so setting a status does not erase the rating while `{"rating": null}` still clears it. This is what lets the client fire one small `PUT` per control instead of shipping several fields together — the one request shape that can clobber.
+      **Preferences are derived from books rated 4+, never declared.** A declared list is friction at signup and stale afterwards, and a profile header contradicting the history under it is exactly the inconsistency this module removes. Nothing rated yet yields empty lists and `based_on=0` — the honest answer, with the client asking for a rating rather than inventing tastes. Ties break alphabetically, or the chips reshuffle between two identical requests and read as a bug.
+      **A correction removes the misidentified book from the library** — but only when it is an untouched scan artifact (no rating, no journal note, still `SCANNED`). Once the user has said something about it, it is theirs and it stays.
+- [ ] **Module 6b: Recommendations** — profile vector (rating-weighted average over entries rated ≥4), candidate generation, filtering by already-read books, score + explanation ("because you liked X"). Purely content-based — single user, guaranteed cold start, no collaborative filtering.
+      **Candidates cannot come from Chroma alone.** `book_chunks` holds only books the user has already scanned — that pool is exactly the set that must be filtered out, so the honest answer would always be zero recommendations. Cold start here is not "no ratings", it is "nothing to choose from". Candidates come from the catalog instead: Google Books / Open Library queried by the derived genres and authors, descriptions embedded locally with `nomic-embed-text`, ranked against the profile vector.
+      **Recommendations get their own Chroma collection, `book_profiles` (one vector per book).** They need a query *across* books, which is precisely what `vector_store.py`'s mandatory `book_id` filter forbids — and that filter is Module 5's central correctness invariant, not a preference. It is not weakened, flagged around, or given an exception: two collections, two rules, neither relaxed.
+      Low-rated books feed an exclusion set on author/genre rather than being subtracted from the profile vector — negative vector arithmetic produces results that cannot be explained. The explanation is computed from the nearest contributing book in the user's library, not generated by a model.
 - [~] **Module 7: Client** — **started early, intentionally.** The mobile client (Expo + React Native + TypeScript) lives in `frontend/`, with its own `frontend/CLAUDE.md`. Testing on a **physical phone via Expo Go** (the Android emulator was rejected: ~1.5 GB RAM on a laptop with 7.4 GB that's also running Ollama). The `/dev` test HTML page is no longer needed — the real app replaces it.
       **The frontend is at parity with Modules 0-4** — caught up in the same session Module 4 landed, so neither side is ahead. See `frontend/docs/module-0-2-paritate-backend.md` (local, gitignored).
 

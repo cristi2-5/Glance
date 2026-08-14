@@ -1,11 +1,11 @@
-/** Personalized recommendations (demo data until Module 6). */
+/** Personalized recommendations (demo data until backend Module 6b). */
 
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 
 import { BookCard } from '@/components/book/CardCarte'
 import { DemoNote } from '@/components/ui/NotaDemo'
 import { Screen } from '@/components/ui/Screen'
-import { DEMO_DATA, useRecommendations } from '@/features/library/hooks'
+import { DEMO_RECOMMENDATIONS_DATA, useRecommendations } from '@/features/library/hooks'
 import { colors, spacing, typography } from '@/theme'
 
 export default function RecommendationsScreen() {
@@ -21,8 +21,8 @@ export default function RecommendationsScreen() {
         </Text>
       </View>
 
-      {DEMO_DATA ? (
-        <DemoNote message="Demo data — real recommendations arrive with backend Module 6." />
+      {DEMO_RECOMMENDATIONS_DATA ? (
+        <DemoNote message="Demo data — real recommendations arrive with backend Module 6b. Your library, ratings and profile are already real." />
       ) : null}
 
       {isPending ? (

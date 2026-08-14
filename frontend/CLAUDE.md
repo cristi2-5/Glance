@@ -141,7 +141,9 @@ Letting a reader mistake one for the other is what the label prevents.
 
 Screens for Modules 3-6 (not yet implemented on the backend) use data from `src/mocks/`, but always show a `<DemoNote>` or a banner. An unmarked mock is a lie on the screen — indistinguishable from a real result during testing.
 
-Switching to the real API happens **in a single place per domain**: `src/features/library/hooks.ts` (the `DEMO_DATA` flag) and `src/features/scan/mapper.ts`. Screens don't change.
+Switching to the real API happens **in a single place per domain**: `src/features/library/hooks.ts` (now the `DEMO_RECOMMENDATIONS_DATA` flag, scoped to the one feature still on mocks) and `src/features/scan/mapper.ts`. Screens don't change.
+
+The flag is deliberately **per feature, not per file**. When Module 6a made history, stats and preferences real while recommendations stayed fake, a single `DEMO_DATA` covering the whole module would have marked real data as demo *and* fake data as real, depending on which screen read it. Narrow the flag as each feature lands.
 
 ### Image resizing happens on the client
 
@@ -186,11 +188,12 @@ frontend/
 │   │   └── register.tsx
 │   └── (app)/
 │       ├── _layout.tsx             # access gate: redirect → /login without a session
+│       ├── book/[bookId].tsx       # one book: status, rating, reading journal
 │       ├── (tabs)/
 │       │   ├── _layout.tsx         # tab bar
 │       │   ├── index.tsx           # Home — cover capture
-│       │   ├── recomandari.tsx     # mock (Module 6)
-│       │   └── profil.tsx          # real identity + mock history/preferences
+│       │   ├── recomandari.tsx     # mock (Module 6b)
+│       │   └── profil.tsx          # real identity, counters, preferences, history
 │       └── scan/
 │           ├── camera.tsx          # capture, full-screen
 │           └── [jobId].tsx         # polling + result
@@ -199,20 +202,21 @@ frontend/
 │   │   ├── client.ts               # axios + single-flight refresh
 │   │   ├── tokenStore.ts           # SecureStore + in-memory mirror
 │   │   ├── errors.ts               # ApiError, normalizes the two shapes of `detail`
-│   │   └── endpoints/              # auth, users, books, jobs
+│   │   └── endpoints/              # auth, users, books, jobs, library
 │   ├── components/
 │   │   ├── ui/                     # Button, Input, Screen, Card, Chip, BannerEroare, NotaDemo
-│   │   └── book/                   # CardCarte, RatingStele, BookCover, SummarySection
+│   │   └── book/                   # CardCarte, RatingStele, BookCover, SummarySection,
+│   │                               #   ReadingStatusPicker, RatingInput, JournalTimeline
 │   ├── config/env.ts               # API_URL inferred from the Metro host
 │   ├── features/
 │   │   ├── auth/schema.ts          # zod validation
 │   │   ├── scan/                   # hooks (upload + polling), result mapper
-│   │   └── library/hooks.ts        # history/preferences/recommendations — mock switch
+│   │   └── library/hooks.ts        # library queries + mutations; recommendations still mocked
 │   ├── lib/                        # imagine.ts, queryClient.ts
 │   ├── mocks/                      # demo data, typed like the real API
 │   ├── store/authStore.ts
 │   ├── theme/                      # colors, typography, spacing, fonts
-│   └── types/                      # api.ts (mirrors Pydantic), biblioteca.ts (Module 6)
+│   └── types/                      # api.ts (mirrors Pydantic), biblioteca.ts (library + Module 6b)
 └── .env.example
 ```
 
@@ -237,7 +241,19 @@ The frontend progresses **in parallel with the backend**, module by module. Don'
       *Done when:* `npx tsc --noEmit` clean and `npx expo export` bundles. **Done.**
 - [x] **Module 5: RAG** — real summary with citations. `src/components/book/SummarySection.tsx` owns the whole section: it fetches itself via `useBookSummary` (`GET /books/{book_id}/summary`), renders the claims as flowing prose where **each sentence is tappable** and highlights the numbered source card(s) it came from, and keeps the publisher's `description` under its "From the publisher" heading as the fallback. `AnalysisResult` lost `summary` and `reviews`; `BookSummary`, `SummaryClaim` and the extended `SourceReview` replace them in `src/types/api.ts`.
       *Done when:* `npx tsc --noEmit` clean and `npx expo export` bundles. **Done.**
-- [ ] **Module 6: Recommendations** — replace the mocks in `src/features/library/hooks.ts`, set `DEMO_DATA` to `false`, check the types in `src/types/biblioteca.ts` against the real schema.
+- [x] **Module 6a: Personal library + reading journal** — real history, counters, derived preferences, and the screens that produce them. `src/types/biblioteca.ts` mirrors the real backend schemas; `src/api/endpoints/library.ts` and the rewritten `src/features/library/hooks.ts` replace the mocks. `ReadingStatusPicker` sits on the scan result; the new `app/(app)/book/[bookId].tsx` carries `RatingInput` and `JournalTimeline`; `app/(app)/(tabs)/profil.tsx` runs entirely on real data with every row tappable.
+      *Done when:* `npx tsc --noEmit` clean and `npx expo export` bundles. **Done.**
+      **The card type was renamed `BookSummary` → `LibraryBook`.** `BookSummary` in `types/api.ts` is the *generated RAG summary* — a completely different thing that renders on the same screen. Two types sharing one name there is a mistake waiting to be made.
+      **`DEMO_DATA` is gone, replaced by `DEMO_RECOMMENDATIONS_DATA`.** Recommendations are the only thing still on mocks (backend Module 6b), and one flag spanning a half-real screen would mislabel both halves.
+      **Capture and reflection are separate screens, and that was a correction made on use.** The scan result used to ask "What did you think?" seconds after the shutter — a question with no honest answer yet. It now offers only the reading status. Rating and journal moved to the book screen, where there is something to say.
+      **There is no Save button on the status or rating controls.** Every tap fires a `PUT` carrying *only* the field it changed, which is the shape the backend's partial update expects. A Save button would mean holding several fields in local state and shipping them together, the one request shape that *can* clobber. Tapping the active status or the current rating clears it — both the undo affordance and the reason the backend distinguishes an explicit `null` from an absent field.
+      **`RatingInput` is deliberately not `RatingStele`.** One is the catalog's average from thousands of strangers, the other is the reader's own score, and both render on the book screen. Drawing them as the same control would make the two indistinguishable.
+      **The journal composer clears its draft only *after* the note is stored.** Clearing on submit loses what the reader wrote if the request fails — and a journal note is the one thing in this app the user cannot re-derive.
+      **The book screen renders from the library entry, not a book endpoint.** `LibraryEntry.book` already carries cover, title, author and categories, so it is one request — and "not in your library" becomes structural rather than an extra check.
+      **`useLibraryEntry` maps a 404 to `null`, not to an error.** "This book isn't in your library yet" is the ordinary starting state of every book; surfacing it as an `ApiError` would put an error banner over a perfectly healthy screen.
+      **The profile never counts the history array.** `books_scanned` comes from `/users/me/stats`, computed over the whole library, because the list is paginated and a page length is not a number of books.
+      **Every mutation invalidates by the `'library'` prefix**, which catches the lists (each status filter separately), the stats and the derived preferences in one call — otherwise the header drifts out of sync with the history under it, which is the exact inconsistency this module removed.
+- [ ] **Module 6b: Recommendations** — replace `DEMO_RECOMMENDATIONS` in `src/mocks/biblioteca.ts`, set `DEMO_RECOMMENDATIONS_DATA` to `false`, check `Recommendation` in `src/types/biblioteca.ts` against the real schema.
 - [ ] **Module 7: Polish** — animations (`react-native-reanimated` already installed), empty states, offline handling, dark theme (tokens are structured for it).
 
 ## Useful commands

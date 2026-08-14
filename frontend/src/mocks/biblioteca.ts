@@ -1,62 +1,13 @@
 /**
- * Demo data for Profile and Recommendations (backend Module 6).
+ * Demo data for the Recommendations screen (backend Module 6b).
  *
- * See the note in `src/types/library.ts`: the shapes here are the
- * contract the real data will follow.
+ * History, stats and preferences are **real** as of Module 6a and no
+ * longer live here. What remains is only what the backend cannot answer
+ * yet, so the demo marker on screen stays truthful about which half is
+ * fabricated.
  */
 
-import type {
-  HistoryEntry,
-  Recommendation,
-  UserPreferences,
-} from '@/types/biblioteca'
-
-export const DEMO_HISTORY: HistoryEntry[] = [
-  {
-    id: 'h1',
-    user_rating: 5,
-    read_at: '2026-07-28T18:40:00Z',
-    book: {
-      id: 'b1',
-      title: 'The Name of the Rose',
-      author: 'Umberto Eco',
-      cover_url: null,
-      categories: ['Historical fiction', 'Mystery'],
-      average_rating: 4.2,
-    },
-  },
-  {
-    id: 'h2',
-    user_rating: 4,
-    read_at: '2026-07-11T09:15:00Z',
-    book: {
-      id: 'b2',
-      title: 'The Master and Margarita',
-      author: 'Mikhail Bulgakov',
-      cover_url: null,
-      categories: ['Magical realism', 'Satire'],
-      average_rating: 4.4,
-    },
-  },
-  {
-    id: 'h3',
-    user_rating: null,
-    read_at: '2026-06-30T20:05:00Z',
-    book: {
-      id: 'b3',
-      title: 'Solaris',
-      author: 'Stanisław Lem',
-      cover_url: null,
-      categories: ['Science fiction', 'Philosophical'],
-      average_rating: 4.0,
-    },
-  },
-]
-
-export const DEMO_PREFERENCES: UserPreferences = {
-  favorite_genres: ['Historical fiction', 'Science fiction', 'Magical realism', 'Mystery'],
-  favorite_authors: ['Umberto Eco', 'Stanisław Lem', 'Mikhail Bulgakov'],
-}
+import type { Recommendation } from '@/types/biblioteca'
 
 export const DEMO_RECOMMENDATIONS: Recommendation[] = [
   {
@@ -64,7 +15,7 @@ export const DEMO_RECOMMENDATIONS: Recommendation[] = [
     score: 0.91,
     explanation: 'Because you liked The Name of the Rose',
     book: {
-      id: 'b4',
+      id: 904,
       title: "Foucault's Pendulum",
       author: 'Umberto Eco',
       cover_url: null,
@@ -77,7 +28,7 @@ export const DEMO_RECOMMENDATIONS: Recommendation[] = [
     score: 0.84,
     explanation: 'Close to Solaris in theme and tone',
     book: {
-      id: 'b5',
+      id: 905,
       title: 'The Cyberiad',
       author: 'Stanisław Lem',
       cover_url: null,
@@ -90,7 +41,7 @@ export const DEMO_RECOMMENDATIONS: Recommendation[] = [
     score: 0.78,
     explanation: 'Magical realism, like The Master and Margarita',
     book: {
-      id: 'b6',
+      id: 906,
       title: 'One Hundred Years of Solitude',
       author: 'Gabriel García Márquez',
       cover_url: null,
@@ -103,7 +54,7 @@ export const DEMO_RECOMMENDATIONS: Recommendation[] = [
     score: 0.72,
     explanation: 'Historical mystery, in line with your reading',
     book: {
-      id: 'b7',
+      id: 907,
       title: "The Shadow of the Wind",
       author: 'Carlos Ruiz Zafón',
       cover_url: null,

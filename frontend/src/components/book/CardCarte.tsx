@@ -7,13 +7,13 @@ import { StyleSheet, Text, View } from 'react-native'
 
 import { Card } from '@/components/ui/Card'
 import { colors, spacing, typography } from '@/theme'
-import type { BookSummary } from '@/types/biblioteca'
+import type { LibraryBook } from '@/types/biblioteca'
 
 import { BookCover } from './BookCover'
 import { RatingStars } from './RatingStele'
 
 interface BookCardProps {
-  book: BookSummary
+  book: LibraryBook
   /** Extra row under the metadata — a recommendation's explanation, for example. */
   footer?: string
   onPress?: () => void

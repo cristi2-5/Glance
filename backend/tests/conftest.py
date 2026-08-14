@@ -14,6 +14,8 @@ from app.main import app
 from app.models import (  # noqa: F401  (registers the models on Base.metadata)
     Book,
     Job,
+    JournalEntry,
+    LibraryEntry,
     RefreshToken,
     TextSource,
     User,
