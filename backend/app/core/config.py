@@ -82,6 +82,22 @@ class Settings(BaseSettings):
     groq_llm_model: str = "openai/gpt-oss-120b"
     groq_request_timeout_seconds: int = 60
     groq_max_retries: int = 2
+    # How much hidden chain-of-thought each Groq model may spend before it
+    # emits the answer. Both models here are reasoning models, and we ask
+    # them for small structured JSON, not for reasoning — left at their
+    # defaults they burn the completion budget thinking and get truncated
+    # mid-object (Groq answers 400 json_validate_failed, or the reply
+    # simply parses as nothing).
+    #
+    # **The accepted values differ per model family, and Groq rejects the
+    # wrong one with a 400**, which is not retryable and takes down the
+    # whole call: Qwen3 accepts `none`/`default`, while gpt-oss accepts
+    # only `low`/`medium`/`high` — it cannot turn reasoning off at all, so
+    # `low` is the floor there. That is why this is two settings resolved
+    # per model (`groq_reasoning_effort_for`) rather than one constant in
+    # `groq_client.py`: a single value cannot be correct for both.
+    groq_vision_reasoning_effort: Literal["none", "default", "low", "medium", "high"] = "none"
+    groq_llm_reasoning_effort: Literal["none", "default", "low", "medium", "high"] = "low"
     # Floor on completion tokens for JSON-mode calls (see `groq_client.py`).
     # Groq's models here are reasoning models — even with reasoning turned
     # off for these calls, they need more headroom than a small non-
@@ -210,6 +226,24 @@ class Settings(BaseSettings):
     def llm_model(self) -> str:
         """The summary-generation model name for the currently active `ai_provider`."""
         return self.groq_llm_model if self.ai_provider == "groq" else self.ollama_llm_model
+
+    def groq_reasoning_effort_for(self, model: str) -> str | None:
+        """The `reasoning_effort` to send for a given Groq model.
+
+        Args:
+            model: The Groq model name being called.
+
+        Returns:
+            The configured effort for the vision or LLM model, or `None`
+            for any other model — meaning "send no `reasoning_effort` at
+            all", since we have no way to know which vocabulary an
+            unrecognised model accepts, and guessing wrong is a 400.
+        """
+        if model == self.groq_vision_model:
+            return self.groq_vision_reasoning_effort
+        if model == self.groq_llm_model:
+            return self.groq_llm_reasoning_effort
+        return None
 
 
 @lru_cache

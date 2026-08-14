@@ -72,7 +72,7 @@ class AsyncGroqClient:
         message = ChatCompletionUserMessageParam(
             role="user", content=self._build_content(prompt, images)
         )
-        kwargs = self._build_kwargs(format, options)
+        kwargs = self._build_kwargs(model, format, options)
         attempts = self._settings.groq_max_retries + 1
         last_exception: Exception | None = None
 
@@ -83,7 +83,20 @@ class AsyncGroqClient:
                     messages=[message],
                     **kwargs,
                 )
-                return response.choices[0].message.content or ""
+                choice = response.choices[0]
+                if choice.finish_reason == "length":
+                    # Not an error — Groq returns 200 with whatever it had
+                    # emitted so far. But a JSON reply cut mid-object parses
+                    # as nothing, and the caller can only report "unparsable"
+                    # without knowing why. This line is the difference
+                    # between that and "raise the token budget".
+                    logger.warning(
+                        "groq_generate_truncated",
+                        model=model,
+                        max_tokens=kwargs.get("max_tokens"),
+                        reasoning_effort=kwargs.get("reasoning_effort"),
+                    )
+                return choice.message.content or ""
             except _RETRYABLE_EXCEPTIONS as exc:
                 last_exception = exc
                 logger.warning(
@@ -128,21 +141,27 @@ class AsyncGroqClient:
             )
         return parts
 
-    def _build_kwargs(self, format: str | None, options: dict[str, Any] | None) -> dict[str, Any]:
+    def _build_kwargs(
+        self, model: str, format: str | None, options: dict[str, Any] | None
+    ) -> dict[str, Any]:
         """Translates the provider-neutral `format`/`options` into Groq's own
         chat-completion parameters (`response_format`, `max_tokens`, ...).
         """
         kwargs: dict[str, Any] = {}
         if format == "json":
             kwargs["response_format"] = {"type": "json_object"}
-            # Groq's models here (qwen/qwen3.6-27b, openai/gpt-oss-120b) are
-            # reasoning models: left alone, they spend the token budget on a
-            # hidden chain-of-thought before ever emitting the JSON answer,
-            # which empties out the visible content under a tight cap and
-            # fails Groq's own JSON validation (400 json_validate_failed).
-            # We're extracting a small structured answer, not asking for
-            # reasoning, so skip it.
-            kwargs["reasoning_effort"] = "none"
+        # Both Groq models here are reasoning models: left at their default
+        # they spend the token budget on a hidden chain-of-thought before
+        # ever emitting the answer, which empties out the visible content
+        # under a tight cap (and, in JSON mode, fails Groq's own validation
+        # with a 400 json_validate_failed). We want a small structured
+        # answer, not reasoning, so it is turned down as far as each model
+        # allows — how far that is differs per model, so the value comes
+        # from settings rather than being a constant here. See
+        # `Settings.groq_reasoning_effort_for`.
+        effort = self._settings.groq_reasoning_effort_for(model)
+        if effort is not None:
+            kwargs["reasoning_effort"] = effort
         if options:
             if "num_predict" in options:
                 # `num_predict` is an Ollama-tuned cap (short, non-reasoning
