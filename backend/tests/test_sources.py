@@ -8,6 +8,7 @@ import respx
 
 from app.core.config import Settings, get_settings
 from app.models.book import SourceKind
+from app.services.sources.base import DiscoveryQuery
 from app.services.sources.google_books import GoogleBooksSource
 from app.services.sources.open_library import OpenLibrarySource
 from app.services.sources.wikipedia import WikipediaSource
@@ -38,6 +39,52 @@ def _volume(**overrides: object) -> dict[str, object]:
     }
     info.update(overrides)
     return {"items": [{"volumeInfo": info}]}
+
+
+# --- The API key never travels in the URL ------------------------------------
+
+
+async def test_google_books_sends_the_api_key_as_a_header_never_in_the_url() -> None:
+    """The key goes in `X-Goog-Api-Key`, so nothing that logs URLs can leak it.
+
+    `httpx` logs the full request URL at INFO. With the key in `params` it
+    was written verbatim into the application log on every catalog call —
+    which is exactly how it ended up copied out of a terminal and into a
+    chat window. Google accepts the header form for this reason.
+
+    Asserted on both paths, because the scan path and discovery build
+    their parameters separately and only one of them was fixed first.
+    """
+    settings = get_settings().model_copy(update={"google_books_api_key": "secret-key-value"})
+    source = GoogleBooksSource(settings)
+
+    with respx.mock:
+        route = respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=_volume()))
+        await source.fetch("Dune", "Frank Herbert")
+        await source.discover(DiscoveryQuery(subject="Science fiction"), limit=5)
+
+    assert len(route.calls) == 2
+    for call in route.calls:
+        assert "secret-key-value" not in str(call.request.url)
+        assert call.request.headers["X-Goog-Api-Key"] == "secret-key-value"
+
+
+async def test_google_books_sends_no_key_header_when_none_is_configured() -> None:
+    """Without a key the request is anonymous, not one with an empty header.
+
+    An empty `X-Goog-Api-Key` is a malformed credential rather than an
+    absent one, and Google rejects it differently from an unauthenticated
+    request — which would turn "no key configured" into a confusing 400
+    instead of the documented keyless-quota 429.
+    """
+    settings = get_settings().model_copy(update={"google_books_api_key": None})
+    source = GoogleBooksSource(settings)
+
+    with respx.mock:
+        route = respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json=_volume()))
+        await source.fetch("Dune")
+
+    assert "X-Goog-Api-Key" not in route.calls[0].request.headers
 
 
 # --- Picking the author out of Google's contributor list ---------------------
@@ -180,13 +227,20 @@ async def test_google_books_empty_result_set_is_a_real_no_match() -> None:
 
 
 async def test_google_books_sends_the_api_key_when_configured() -> None:
+    """The key is sent — as a header. It used to be a `?key=` parameter.
+
+    Changed in Module 6b: `httpx` logs full URLs at INFO, so the query-string
+    form wrote the key into the log on every catalog call. See
+    `test_google_books_sends_the_api_key_as_a_header_never_in_the_url`.
+    """
     source = GoogleBooksSource(Settings(google_books_api_key="k-123"))
 
     with respx.mock:
         route = respx.get(_VOLUMES_URL).mock(return_value=httpx.Response(200, json={"items": []}))
         await source.fetch("Dune")
 
-    assert route.calls.last.request.url.params["key"] == "k-123"
+    assert route.calls.last.request.headers["X-Goog-Api-Key"] == "k-123"
+    assert "k-123" not in str(route.calls.last.request.url)
 
 
 # --- Open Library -----------------------------------------------------------

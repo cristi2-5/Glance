@@ -193,6 +193,82 @@ class Settings(BaseSettings):
     # counted too, and a reply truncated mid-object parses as nothing.
     rag_max_output_tokens: int = 2048
 
+    # Recommendations (Module 6b)
+    #
+    # Candidates cannot come from the RAG corpus: `book_chunks` holds only
+    # books this user has already scanned, and that is exactly the set that
+    # must be filtered out. They come from the catalogs instead, queried by
+    # the genres and authors derived from books the user rated well.
+    #
+    # How many derived labels seed that discovery. Deliberately fewer than
+    # the profile shows: each seed is one query per catalog, and the sixth
+    # favourite genre characterises the reader far less than the first.
+    recommendation_seed_genres: int = 3
+    recommendation_seed_authors: int = 2
+    # How many volumes each individual catalog query asks for, and the cap
+    # on how many *new* books one discovery run may persist. The second
+    # bounds both the embedding work (one local `nomic-embed-text` pass per
+    # new book) and how fast the shared candidate pool grows.
+    recommendation_results_per_query: int = 12
+    recommendation_max_new_candidates: int = 60
+    # Default page size of `GET /users/me/recommendations`.
+    recommendation_default_limit: int = 12
+    # Floor on cosine similarity to the profile vector. Low on purpose: the
+    # pool is already seeded from this reader's own genres and authors, so
+    # everything in it is topically plausible and a high floor would empty
+    # the list rather than sharpen it. This rejects noise, it does not rank.
+    recommendation_min_score: float = 0.20
+    # How long a discovery run stays good for. Re-running it is several
+    # catalog requests against a quota, and the catalogs do not gain new
+    # books by the hour. A change in the reader's derived preferences
+    # invalidates this independently of the clock — see `RecommendationState`.
+    recommendation_candidate_ttl_hours: int = 24
+    # ...but a run during which a source went unavailable gets a far
+    # shorter one. Same reasoning as `empty_book_cache_ttl_hours` in Module
+    # 4: a degraded answer is not a settled fact, and pinning a pool built
+    # from half its queries for a full day means one bad minute costs the
+    # reader a day of thin recommendations, with no way to shake it loose.
+    recommendation_degraded_ttl_hours: int = 1
+    # Pause between two queries to the *same* catalog during discovery.
+    #
+    # **Measured, not guessed.** Discovery issues one query per seed, and
+    # firing them concurrently is what the original implementation did:
+    # against Google Books that produced a 503 on 16 of 20 requests, while
+    # the identical queries paced one second apart returned 200 on 5 of 5.
+    # Google sheds load per key on burst rate, not on query shape — the
+    # `printType`/`orderBy` parameters were measured to make no difference
+    # at all. The scan path never hit this because it issues exactly one
+    # Google Books request at a time; discovery was the first code here to
+    # fan out.
+    recommendation_query_spacing_seconds: float = 1.0
+    # Extra attempts per discovery query, deliberately below
+    # `catalog_max_retries`. A scan waits on one lookup and is worth
+    # retrying hard; discovery has one query per seed and gives up on a
+    # source after its first unavailable answer, so retrying each query
+    # three times against a host that is down is how a once-a-day refresh
+    # becomes a two-minute request.
+    recommendation_discovery_retries: int = 1
+    # Floor on how often discovery may start for one reader, whatever the
+    # TTL and the preference fingerprint say.
+    #
+    # Both of those invalidate on a *rating*, and every library write
+    # invalidates the client's recommendation query — so rating a book
+    # three times in three seconds fired three refetches, each with new
+    # derived preferences, each starting its own discovery. Three
+    # concurrent runs, a dozen simultaneous catalog requests, Google Books
+    # shedding load again, and one of them crashing on the unique key its
+    # twin had just inserted. Pacing queries within a run does nothing
+    # about several runs.
+    #
+    # The reader's *ranking* is never stale because of this: the profile
+    # vector is recomputed from their ratings on every request, and only
+    # the candidate pool lags.
+    recommendation_min_discovery_interval_seconds: float = 60.0
+    # Ceiling on the description text that goes into a book's profile
+    # document. Past a paragraph or two a blurb starts describing the
+    # publisher's marketing rather than the book.
+    recommendation_document_max_chars: int = 1200
+
     # Vision (Module 3)
     image_max_edge_px: int = 768
     image_jpeg_quality: int = 85

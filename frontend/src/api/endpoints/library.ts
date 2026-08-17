@@ -8,6 +8,7 @@ import type {
   LibraryPreferences,
   LibraryStats,
   ReadingStatus,
+  RecommendationList,
 } from '@/types/biblioteca'
 
 /**
@@ -59,6 +60,23 @@ export async function getLibraryStats(): Promise<LibraryStats> {
  */
 export async function getLibraryPreferences(): Promise<LibraryPreferences> {
   const { data } = await apiClient.get<LibraryPreferences>('/users/me/preferences')
+  return data
+}
+
+/**
+ * Reads the books this reader might like next, most similar first.
+ *
+ * The first call after a rating changes can take a few seconds: the
+ * backend asks the catalogs for new candidates and embeds them locally.
+ * Subsequent calls rank against an index that is already built.
+ *
+ * Returns:
+ *   The recommendations plus `based_on`. **An empty list is a normal
+ *   response, never an error** — read `based_on` to tell "nothing to build
+ *   a profile from yet" from "the catalogs had nothing new".
+ */
+export async function getRecommendations(): Promise<RecommendationList> {
+  const { data } = await apiClient.get<RecommendationList>('/users/me/recommendations')
   return data
 }
 

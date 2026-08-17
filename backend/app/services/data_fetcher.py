@@ -301,7 +301,7 @@ class BookDataFetcher:
         # Title and author deliberately don't count as content: they came off
         # the cover, so a book whose only "metadata" is its own title tells
         # the user nothing they didn't photograph.
-        book.metadata_found = _has_content(metadata, passages)
+        book.metadata_found = has_content(metadata, passages)
 
         # Replace the collection wholesale rather than appending, so a
         # refresh after the TTL expires does not accumulate a second copy
@@ -346,8 +346,14 @@ class BookDataFetcher:
         return book
 
 
-def _has_content(metadata: BookMetadata, passages: list[TextSource]) -> bool:
+def has_content(metadata: BookMetadata, passages: list[TextSource]) -> bool:
     """Decides whether a fetch produced anything worth showing the user.
+
+    Public because Module 6b writes `Book` rows too — the candidates it
+    discovers in the catalogs — and `metadata_found` has to mean the same
+    thing on those rows as on scanned ones. A second, "obviously
+    equivalent" check written over there is how the flag would end up with
+    two definitions and the client with two success states.
 
     Args:
         metadata: The merged catalog metadata.

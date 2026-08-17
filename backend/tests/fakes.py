@@ -3,6 +3,7 @@
 import hashlib
 import math
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -10,7 +11,12 @@ from typing import Any
 from app.models.book import SourceName
 from app.services.ocr_service import OcrEngine, TextCandidate
 from app.services.ollama_client import OllamaClient
-from app.services.sources.base import SourceResult
+from app.services.sources.base import (
+    BookMetadata,
+    DiscoveryQuery,
+    DiscoveryResult,
+    SourceResult,
+)
 from app.services.title_lookup import BookCandidate, LookupOutcome, TitleLookup
 
 
@@ -104,6 +110,60 @@ class FakeContentSource:
         if self._raises is not None:
             raise self._raises
         return self._result
+
+
+class FakeCandidateSource:
+    """`CandidateSource` answering discovery queries from a script.
+
+    Keyed by query label (`"subject:Science fiction"`) so a test can give
+    one answer per seed and assert on which seeds were actually used —
+    which is how the "generic subjects are never queried" property is
+    checked. Unlisted queries answer with nothing, the same as a catalog
+    that simply holds no such books.
+
+    `available` covers the other case entirely: a source that could not be
+    reached, which must not be recorded as a completed discovery run.
+    """
+
+    def __init__(
+        self,
+        source: SourceName,
+        results: dict[str, list[BookMetadata]] | None = None,
+        available: bool = True,
+        raises: Exception | None = None,
+        unavailable_after: int | None = None,
+    ) -> None:
+        self._name = source
+        self._results = results or {}
+        self._available = available
+        self._raises = raises
+        # Simulates a catalog that answers for a while and then goes down
+        # mid-run — the shape that made a synchronous request hang for
+        # minutes before discovery learned to stop asking.
+        self._unavailable_after = unavailable_after
+        self.queries: list[str] = []
+        #: Wall-clock offsets of each call, so a test can assert the
+        #: queries were paced rather than fired all at once.
+        self.call_times: list[float] = []
+        self._started = time.monotonic()
+
+    @property
+    def name(self) -> SourceName:
+        return self._name
+
+    async def discover(self, query: DiscoveryQuery, limit: int) -> DiscoveryResult:
+        self.queries.append(query.label())
+        self.call_times.append(time.monotonic() - self._started)
+        if self._raises is not None:
+            raise self._raises
+        if not self._available:
+            return DiscoveryResult.unavailable(self._name)
+        if self._unavailable_after is not None and len(self.queries) > self._unavailable_after:
+            return DiscoveryResult.unavailable(self._name)
+        return DiscoveryResult(
+            source=self._name,
+            candidates=list(self._results.get(query.label(), []))[:limit],
+        )
 
 
 class FakeCoverFallback:

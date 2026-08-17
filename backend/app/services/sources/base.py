@@ -106,6 +106,69 @@ class SourceResult:
         return cls(source=source, matched=False, available=True)
 
 
+@dataclass(frozen=True)
+class DiscoveryQuery:
+    """A request for books *like* something, rather than for one book.
+
+    The two catalogs spell this differently — Google Books wants
+    `subject:"..."` / `inauthor:"..."` inside its `q` string, Open Library
+    wants `subject=` / `author=` parameters — so the intent is carried
+    here and each source translates it. Exactly one field is set per
+    query: "science fiction by Frank Herbert" would return the books the
+    reader already has, not new ones.
+
+    Attributes:
+        subject: A genre or subject label to find books in.
+        author: An author to find other books by.
+    """
+
+    subject: str | None = None
+    author: str | None = None
+
+    def label(self) -> str:
+        """Returns a short description of this query, for logging."""
+        if self.subject:
+            return f"subject:{self.subject}"
+        if self.author:
+            return f"author:{self.author}"
+        return "empty"
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    """The books one source returned for one `DiscoveryQuery`.
+
+    Candidates are plain `BookMetadata`: a discovered book carries exactly
+    the catalog fields a looked-up one does, and reusing the type is what
+    lets `Book` rows be built from either without a second mapping that
+    could drift.
+
+    Attributes:
+        source: Which source produced these.
+        candidates: The books found, in the source's own relevance order.
+        available: `False` when the source could not be reached. As
+            everywhere else in this package, that is not the same fact as
+            "found nothing", and the caller must not record it as a
+            completed discovery run.
+    """
+
+    source: SourceName
+    candidates: list[BookMetadata] = field(default_factory=list)
+    available: bool = True
+
+    @classmethod
+    def unavailable(cls, source: SourceName) -> "DiscoveryResult":
+        """Builds the result representing an unreachable source.
+
+        Args:
+            source: The source that could not be reached.
+
+        Returns:
+            A `DiscoveryResult` with `available=False` and no candidates.
+        """
+        return cls(source=source, candidates=[], available=False)
+
+
 class ContentSource(Protocol):
     """An official source of book metadata and prose.
 
@@ -129,5 +192,39 @@ class ContentSource(Protocol):
         Returns:
             The metadata and passages found, plus whether the source was
             reachable and whether it matched the book at all.
+        """
+        ...
+
+
+class CandidateSource(Protocol):
+    """An official source that can be asked for books *like* a description.
+
+    Deliberately a separate protocol from `ContentSource`, even though both
+    catalogs implement it on the same class. The two are different
+    questions: `fetch` resolves one known title and merges everything about
+    it, while `discover` asks an open question and expects many partial
+    answers back. Folding them together would give `fetch` a plural return
+    type it has no use for, and would let a discovery result reach the
+    Module 4 merge, where "the first non-`None` value wins" assumes every
+    result describes the *same book*.
+
+    Implementations must never raise for a remote failure — see
+    `DiscoveryResult.unavailable`.
+    """
+
+    @property
+    def name(self) -> SourceName:
+        """The source's identifier, used in logs and for dedup bookkeeping."""
+        ...
+
+    async def discover(self, query: DiscoveryQuery, limit: int) -> DiscoveryResult:
+        """Finds books matching a subject or an author.
+
+        Args:
+            query: What to look for. Exactly one field is set.
+            limit: Maximum candidates to return.
+
+        Returns:
+            The candidates found, plus whether the source was reachable.
         """
         ...

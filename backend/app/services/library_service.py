@@ -46,6 +46,13 @@ MAX_FAVORITE_AUTHORS = 5
 #: preference signal is what makes recommender output drift into mush.
 FAVORITE_RATING_FLOOR = 4
 
+#: The rating at or below which a book counts as actively disliked, feeding
+#: the Module 6b exclusion set. 3 sits deliberately in neither band: it is
+#: "that was fine", which is evidence of neither appetite nor aversion, and
+#: forcing it into one is how a recommender ends up avoiding half a
+#: library's genres on the strength of a shrug.
+DISLIKED_RATING_CEILING = 2
+
 
 async def record_scan(db: AsyncSession, user_id: int, book_id: int) -> LibraryEntry:
     """Records that a user scanned a book, without duplicating the entry.
@@ -332,6 +339,55 @@ async def list_entries(
     statement = statement.order_by(LibraryEntry.updated_at.desc(), LibraryEntry.id.desc())
     result = await db.scalars(statement.limit(limit).offset(offset))
     return list(result)
+
+
+async def list_rated_entries(db: AsyncSession, user_id: int) -> list[LibraryEntry]:
+    """Returns every entry this user has rated, whatever the score.
+
+    Unpaginated, unlike `list_entries`, and that is the point: this feeds
+    the Module 6b profile vector and its exclusion set, and a profile built
+    from the first page of a library is a profile of whatever the reader
+    happened to touch most recently.
+
+    Both ends of the scale come back in one query. They are read for
+    opposite purposes — high ratings build the profile vector, low ones
+    build the author/genre exclusion set — but splitting the query would
+    let the two be taken either side of a concurrent write, and an author
+    could then be liked and excluded at once.
+
+    Args:
+        db: The current database session.
+        user_id: The owner whose entries to return.
+
+    Returns:
+        The rated entries, ordered by rating descending then by book id, so
+        two identical requests derive the same profile. Empty before the
+        first rating, which is the normal state of a new account.
+    """
+    statement = (
+        _owned(select(LibraryEntry), user_id)
+        .where(LibraryEntry.rating.is_not(None))
+        .order_by(LibraryEntry.rating.desc(), LibraryEntry.book_id)
+    )
+    return list(await db.scalars(statement))
+
+
+async def owned_book_ids(db: AsyncSession, user_id: int) -> set[int]:
+    """Returns the ids of every book in this user's library.
+
+    The exclusion set for recommendations: a book the reader has already
+    scanned, shelved or read is not a suggestion. Read as ids rather than
+    entries because that is all the caller needs and a library can be long.
+
+    Args:
+        db: The current database session.
+        user_id: The owner.
+
+    Returns:
+        The book ids, empty for a library that is.
+    """
+    statement = _owned(select(LibraryEntry.book_id), user_id)
+    return set(await db.scalars(statement))
 
 
 async def compute_stats(db: AsyncSession, user_id: int) -> LibraryStats:

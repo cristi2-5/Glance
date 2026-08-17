@@ -36,6 +36,7 @@ from app.models import (  # noqa: F401
     Job,
     JournalEntry,
     LibraryEntry,
+    RecommendationState,
     RefreshToken,
     TextSource,
     User,

@@ -13,6 +13,10 @@ from app.db.session import get_db, get_session_factory
 from app.models.user import User
 from app.services.data_fetcher import BookDataFetcher, build_data_fetcher
 from app.services.rag_service import RagService, build_rag_service
+from app.services.recommendation_service import (
+    RecommendationService,
+    build_recommendation_service,
+)
 from app.services.vision_service import VisionService, build_vision_service
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
@@ -22,6 +26,7 @@ SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session
 VisionServiceDep = Annotated[VisionService, Depends(build_vision_service)]
 DataFetcherDep = Annotated[BookDataFetcher, Depends(build_data_fetcher)]
 RagServiceDep = Annotated[RagService, Depends(build_rag_service)]
+RecommendationServiceDep = Annotated[RecommendationService, Depends(build_recommendation_service)]
 
 
 async def current_user(

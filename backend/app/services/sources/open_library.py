@@ -20,7 +20,13 @@ import structlog
 from app.core.config import Settings
 from app.models.book import SourceKind, SourceName
 from app.services.http_utils import get_json_with_retry, head_exists
-from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
+from app.services.sources.base import (
+    BookMetadata,
+    DiscoveryQuery,
+    DiscoveryResult,
+    SourcePassage,
+    SourceResult,
+)
 from app.services.sources.matching import MIN_TITLE_SIMILARITY, title_similarity
 
 logger = structlog.get_logger(__name__)
@@ -36,6 +42,12 @@ _COVER_BY_ISBN_URL = "https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default
 
 _MAX_SUBJECTS = 20
 
+#: Cap on contributors kept for a discovered book. `fetch` joins the whole
+#: list because the cover gave us a name to reconcile against; discovery
+#: has no such anchor, so the same "a cast of ten is not co-authorship"
+#: reasoning as `google_books._pick_author` applies.
+_MAX_DISCOVERY_AUTHORS = 2
+
 
 class OpenLibrarySource:
     """`ContentSource` over Open Library's search and works endpoints."""
@@ -43,6 +55,11 @@ class OpenLibrarySource:
     def __init__(self, settings: Settings) -> None:
         self._timeout = settings.open_library_timeout_seconds
         self._max_retries = settings.catalog_max_retries
+        # Fewer than `fetch` uses — see `GoogleBooksSource.discover` for
+        # why. It matters more here: openlibrary.org has extended outages
+        # during which every request burns the full timeout, and this
+        # source has the longer one of the two.
+        self._discovery_retries = settings.recommendation_discovery_retries
         self._max_chars = settings.source_max_passage_chars
         self._headers = {"User-Agent": settings.source_user_agent}
 
@@ -87,6 +104,77 @@ class OpenLibrarySource:
         work = await self._fetch_work(work_key) if work_key else None
 
         return self._to_result(doc, work, work_key)
+
+    async def discover(self, query: DiscoveryQuery, limit: int) -> DiscoveryResult:
+        """See `CandidateSource.discover`.
+
+        **Descriptions are deliberately not fetched here.** They live on the
+        work record, one request per book — twelve candidates would mean
+        twelve extra round trips per query, per source, on a request a user
+        is waiting on. So an Open Library candidate is characterised by its
+        subjects instead, which the search index *does* return and which
+        are the more granular taxonomy anyway ("Dystopias", "Desert
+        survival") next to Google's top-level BISAC headings.
+
+        The cost is that such a candidate ranks on a shorter document than
+        one Google Books described. That is a real asymmetry and it is
+        accepted rather than hidden: the alternative is either the round
+        trips, or dropping the only keyless CC0 source from discovery
+        exactly when Google's quota is exhausted and it is all we have.
+        """
+        params: dict[str, Any] = {
+            "limit": limit,
+            "fields": "key,title,author_name,cover_i,ratings_average,ratings_count,subject",
+        }
+        if query.subject:
+            params["subject"] = query.subject
+        elif query.author:
+            params["author"] = query.author
+        else:
+            return DiscoveryResult(source=self.name, candidates=[])
+
+        search = await get_json_with_retry(
+            _SEARCH_URL,
+            params,
+            timeout=self._timeout,
+            max_retries=self._discovery_retries,
+            source=f"{self.name.value}_discover",
+            headers=self._headers,
+        )
+        if not search.available:
+            return DiscoveryResult.unavailable(self.name)
+        if not isinstance(search.payload, dict):
+            return DiscoveryResult(source=self.name, candidates=[])
+
+        candidates = [
+            self._metadata_from_doc(doc)
+            for doc in search.payload.get("docs", [])
+            if isinstance(doc, dict) and doc.get("title")
+        ]
+        logger.info("open_library_discovered", query=query.label(), candidates=len(candidates))
+        return DiscoveryResult(source=self.name, candidates=candidates)
+
+    def _metadata_from_doc(self, doc: dict[str, Any]) -> BookMetadata:
+        """Maps a search document onto the catalog fields it carries.
+
+        Args:
+            doc: One entry of the search response's `docs` array.
+
+        Returns:
+            The metadata, with no description — see `discover`.
+        """
+        authors = doc.get("author_name") or []
+        cover_id = doc.get("cover_i")
+        subjects = [str(s) for s in (doc.get("subject") or [])][:_MAX_SUBJECTS]
+
+        return BookMetadata(
+            title=doc.get("title"),
+            author=", ".join(str(a) for a in authors[:_MAX_DISCOVERY_AUTHORS]) or None,
+            categories=subjects,
+            cover_url=_COVER_URL.format(cover_id=cover_id) if cover_id else None,
+            average_rating=doc.get("ratings_average"),
+            ratings_count=doc.get("ratings_count"),
+        )
 
     async def _fetch_work(self, work_key: str) -> dict[str, Any] | None:
         """Fetches the work record carrying description and subjects.

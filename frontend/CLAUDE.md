@@ -139,11 +139,11 @@ Letting a reader mistake one for the other is what the label prevents.
 
 ### Mocks are visibly marked
 
-Screens for Modules 3-6 (not yet implemented on the backend) use data from `src/mocks/`, but always show a `<DemoNote>` or a banner. An unmarked mock is a lie on the screen — indistinguishable from a real result during testing.
+A screen rendering data the backend cannot produce yet always shows a `<DemoNote>` or a banner. An unmarked mock is a lie on the screen — indistinguishable from a real result during testing.
 
-Switching to the real API happens **in a single place per domain**: `src/features/library/hooks.ts` (now the `DEMO_RECOMMENDATIONS_DATA` flag, scoped to the one feature still on mocks) and `src/features/scan/mapper.ts`. Screens don't change.
+**As of Module 6b there are no feature mocks left.** `DEMO_RECOMMENDATIONS_DATA` and `src/mocks/biblioteca.ts` are deleted; what remains under `src/mocks/` is `DEMO_ANALYSIS`, the scan screen's offline fallback, switched in `src/features/scan/mapper.ts`.
 
-The flag is deliberately **per feature, not per file**. When Module 6a made history, stats and preferences real while recommendations stayed fake, a single `DEMO_DATA` covering the whole module would have marked real data as demo *and* fake data as real, depending on which screen read it. Narrow the flag as each feature lands.
+The rule that got us here, kept for the next time it applies: switching to the real API happens **in a single place per domain**, and the flag is **per feature, not per file**. When Module 6a made history, stats and preferences real while recommendations stayed fake, a single `DEMO_DATA` covering the whole module would have marked real data as demo *and* fake data as real, depending on which screen read it. Narrow the flag as each feature lands, then delete it.
 
 ### Image resizing happens on the client
 
@@ -192,7 +192,7 @@ frontend/
 │       ├── (tabs)/
 │       │   ├── _layout.tsx         # tab bar
 │       │   ├── index.tsx           # Home — cover capture
-│       │   ├── recomandari.tsx     # mock (Module 6b)
+│       │   ├── recomandari.tsx     # real suggestions + explanations (Module 6b)
 │       │   └── profil.tsx          # real identity, counters, preferences, history
 │       └── scan/
 │           ├── camera.tsx          # capture, full-screen
@@ -206,14 +206,15 @@ frontend/
 │   ├── components/
 │   │   ├── ui/                     # Button, Input, Screen, Card, Chip, BannerEroare, NotaDemo
 │   │   └── book/                   # CardCarte, RatingStele, BookCover, SummarySection,
-│   │                               #   ReadingStatusPicker, RatingInput, JournalTimeline
+│   │                               #   ReadingStatusPicker, RatingInput, JournalTimeline,
+│   │                               #   RecommendationCard
 │   ├── config/env.ts               # API_URL inferred from the Metro host
 │   ├── features/
 │   │   ├── auth/schema.ts          # zod validation
 │   │   ├── scan/                   # hooks (upload + polling), result mapper
-│   │   └── library/hooks.ts        # library queries + mutations; recommendations still mocked
+│   │   └── library/hooks.ts        # library, journal, stats, preferences, recommendations — all live
 │   ├── lib/                        # imagine.ts, queryClient.ts
-│   ├── mocks/                      # demo data, typed like the real API
+│   ├── mocks/                      # analiza.ts only — the scan screen's offline fallback
 │   ├── store/authStore.ts
 │   ├── theme/                      # colors, typography, spacing, fonts
 │   └── types/                      # api.ts (mirrors Pydantic), biblioteca.ts (library + Module 6b)
@@ -253,7 +254,15 @@ The frontend progresses **in parallel with the backend**, module by module. Don'
       **`useLibraryEntry` maps a 404 to `null`, not to an error.** "This book isn't in your library yet" is the ordinary starting state of every book; surfacing it as an `ApiError` would put an error banner over a perfectly healthy screen.
       **The profile never counts the history array.** `books_scanned` comes from `/users/me/stats`, computed over the whole library, because the list is paginated and a page length is not a number of books.
       **Every mutation invalidates by the `'library'` prefix**, which catches the lists (each status filter separately), the stats and the derived preferences in one call — otherwise the header drifts out of sync with the history under it, which is the exact inconsistency this module removed.
-- [ ] **Module 6b: Recommendations** — replace `DEMO_RECOMMENDATIONS` in `src/mocks/biblioteca.ts`, set `DEMO_RECOMMENDATIONS_DATA` to `false`, check `Recommendation` in `src/types/biblioteca.ts` against the real schema.
+- [x] **Module 6b: Recommendations** — real suggestions with computed explanations. `src/mocks/biblioteca.ts` is **deleted**, `DEMO_RECOMMENDATIONS_DATA` is gone, and `useRecommendations` now calls `GET /users/me/recommendations`. `Recommendation` in `src/types/biblioteca.ts` matches the real schema; the new `RecommendationList` envelope carries `based_on`. The tab screen is rewritten around the new `src/components/book/RecommendationCard.tsx`.
+      *Done when:* `npx tsc --noEmit` clean and `npx expo export` bundles. **Done.**
+      **There are no mocks left in this app.** `src/mocks/analiza.ts` still holds `DEMO_ANALYSIS`, but that is the scan screen's offline fallback, not a stand-in for a missing backend.
+      **`based_on` is why there are two empty states, not one.** `based_on === 0` means there is nothing to build a profile from — the screen asks for a rating and points at the profile. `based_on > 0` with an empty list means the profile exists and the catalogs had nothing past the reader's own library — "check back", with a retry. A single "no recommendations" would ask a reader who has rated forty books to please rate a book.
+      **A 503 renders as an error with a retry, never as an empty shelf.** The first fetch after a taste change reaches the catalogs and runs the local embedding model, so it can genuinely fail — and one of those outcomes is a fact about the reader's library while the other is a fact about the laptop. Same distinction, and same `retry: false` reasoning, as `SummarySection`.
+      **The match score is never rendered.** `score` orders the list and stops there. "73% match" would dress a cosine distance up as a measurement of taste; the explanation is the honest form of the same information, because it names a book the reader actually rated.
+      **The recommendation card does not open the book screen.** A recommended book is by construction *not* in the library — that is the filter the backend applies before ranking — and the book screen renders from the library entry, so tapping through would land on "not in your library" every time. One offer, one action.
+      **The card reads its shelved state from its own mutation, not from `useLibraryEntry`.** Querying per card would be a dozen requests whose answer is known in advance to be "no". And after "Want to read" the card *leaves the list*, because the mutation invalidates the `'library'` prefix and the book is now excluded from the refetched suggestions — so the feedback has to come from the mutation that is still in hand.
+      **`libraryKeys.recommendations()` lives under the `'library'` prefix deliberately.** A rating is a direct input to the suggestion list, exactly as it is to the stats and the derived preferences. Leaving recommendations outside the prefix would let a suggestion sit there explained by "because you liked X" while X has just been re-rated 1.
 - [ ] **Module 7: Polish** — animations (`react-native-reanimated` already installed), empty states, offline handling, dark theme (tokens are structured for it).
 
 ## Useful commands

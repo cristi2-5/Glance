@@ -1,8 +1,9 @@
 """Pydantic schemas for the personal library: entries, stats, preferences."""
 
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.journal import MAX_JOURNAL_LENGTH
 from app.models.library import MAX_RATING, MIN_RATING, ReadingStatus
@@ -22,8 +23,31 @@ class LibraryBook(BaseModel):
     title: str
     author: str | None = None
     cover_url: str | None = None
+    #: Never `None` on the wire — see the validator. A missing genre list
+    #: and an empty one are the same fact to a client rendering chips, and
+    #: the extra null would only be a second empty case to handle.
     categories: list[str] = []
     average_rating: float | None = None
+
+    @field_validator("categories", mode="before")
+    @classmethod
+    def _no_categories_is_an_empty_list(cls, value: Any) -> Any:
+        """Maps the column's `NULL` onto the schema's empty list.
+
+        `Book.categories` is nullable and `BookDataFetcher` writes `None`
+        rather than `[]` when no catalog supplied genres — which is the
+        *normal* outcome for editions outside the English-language
+        mainstream. Without this, validating such a book raises and the
+        whole library list answers 500: one bare record poisons the
+        response for every other book in it.
+
+        Args:
+            value: The attribute as read off the model.
+
+        Returns:
+            The value, with `None` replaced by an empty list.
+        """
+        return [] if value is None else value
 
 
 class LibraryEntryRead(BaseModel):

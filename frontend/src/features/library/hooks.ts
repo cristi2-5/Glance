@@ -1,19 +1,24 @@
 /**
  * Hooks for the personal library, profile stats, preferences and recommendations.
  *
- * The library half is **live** as of backend Module 6a. Recommendations
- * are still demo data until Module 6b, which is why `DEMO_DATA` no longer
- * covers the whole file — a single flag over a screen that is now half
- * real and half fake would mislabel both halves.
+ * **Everything here is live** as of backend Module 6b. The last mock in
+ * this feature — `DEMO_RECOMMENDATIONS` — is gone, and with it the
+ * `DEMO_RECOMMENDATIONS_DATA` flag and the `src/mocks/biblioteca.ts` file
+ * it read from.
  *
- * ## Why every mutation invalidates three keys
+ * ## Why every mutation invalidates by prefix
  *
  * Rating a book changes the entry, the counters on the profile
- * (`ratings_given`, `average_rating`), *and* the derived preferences —
- * those are computed backend-side from books rated 4+, so a rating is
- * exactly the input they read. Invalidating only the list would leave the
- * profile header contradicting the history rendered under it, which is
- * the specific inconsistency this module exists to remove.
+ * (`ratings_given`, `average_rating`), the derived preferences, **and the
+ * recommendations** — all four are computed backend-side from the same
+ * rows, and a rating is the direct input to every one of them. A 5 stars
+ * on a book whose genre the reader had never rated changes the entire
+ * suggestion list on the next fetch.
+ *
+ * Invalidating only the list would leave the profile header contradicting
+ * the history under it; invalidating everything but the recommendations
+ * would leave a suggestion visibly explained by "because you liked X"
+ * pointing at a book the reader has just re-rated 1.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -25,50 +30,37 @@ import {
   getLibraryEntry,
   getLibraryPreferences,
   getLibraryStats,
+  getRecommendations,
   listJournal,
   listLibrary,
   removeJournalEntry,
   removeLibraryEntry,
   updateLibraryEntry,
 } from '@/api/endpoints/library'
-import { DEMO_RECOMMENDATIONS } from '@/mocks/biblioteca'
 import type {
   JournalEntry,
   LibraryEntry,
   LibraryEntryUpdate,
   LibraryPreferences,
   LibraryStats,
-  Recommendation,
   ReadingStatus,
+  RecommendationList,
 } from '@/types/biblioteca'
 
 /**
- * `true` while **recommendations** still come from `src/mocks/`.
+ * Every query key the library touches, in one place.
  *
- * Scoped to that one feature now — history, stats and preferences are
- * real. Screens use it to show a visible marker, because an unmarked mock
- * is a lie on screen.
+ * All of them start with `'library'`, including `recommendations` —
+ * that shared prefix is what makes `invalidateLibrary` complete by
+ * construction rather than by remembering to list each key.
  */
-export const DEMO_RECOMMENDATIONS_DATA = true
-
-/** Simulates network latency, so loading states stay visible in development. */
-const MOCK_DELAY_MS = 400
-
-function delay<T>(value: T): Promise<T> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(value)
-    }, MOCK_DELAY_MS)
-  })
-}
-
-/** Every query key the library touches, in one place. */
 export const libraryKeys = {
   list: (status?: ReadingStatus) => ['library', status ?? 'all'] as const,
   entry: (bookId: number | null) => ['library', 'entry', bookId] as const,
   journal: (bookId: number | null) => ['library', 'journal', bookId] as const,
   stats: () => ['library', 'stats'] as const,
   preferences: () => ['library', 'preferences'] as const,
+  recommendations: () => ['library', 'recommendations'] as const,
 } as const
 
 /**
@@ -169,9 +161,9 @@ export function useRemoveLibraryEntry() {
  * Invalidated by **prefix**, on purpose. Every key in `libraryKeys`
  * starts with `'library'`, so this catches the lists (including each
  * status filter — marking a book read moves it between two cached lists
- * at once), the stats and the derived preferences in one call. A future
- * mutation therefore cannot forget one of them and leave the profile
- * header contradicting the history under it.
+ * at once), the stats, the derived preferences and the recommendations in
+ * one call. A future mutation therefore cannot forget one of them and
+ * leave the profile header contradicting the history under it.
  */
 async function invalidateLibrary(
   queryClient: ReturnType<typeof useQueryClient>,
@@ -180,15 +172,22 @@ async function invalidateLibrary(
 }
 
 /**
- * Personalized recommendations, sorted by score descending.
+ * Personalized recommendations, most similar first.
  *
- * **Still demo data** — backend Module 6b. Screens rendering this must
- * show the demo marker; see `DEMO_RECOMMENDATIONS_DATA`.
+ * **The query is not retried automatically.** The expensive failure is a
+ * 503 from an unreachable local embedding model, which a retry a second
+ * later hits again — while the first call after a taste change can hold
+ * the request for seconds doing catalog lookups and embedding. An explicit
+ * "Try again" is cheaper and more honest, exactly as on the RAG summary.
+ *
+ * An empty result is a success, not an error. Read `based_on` to tell the
+ * two empty cases apart — see `RecommendationList`.
  */
 export function useRecommendations() {
-  return useQuery<Recommendation[]>({
-    queryKey: ['recommendations'],
-    queryFn: () => delay(DEMO_RECOMMENDATIONS),
+  return useQuery<RecommendationList, ApiError>({
+    queryKey: libraryKeys.recommendations(),
+    queryFn: getRecommendations,
+    retry: false,
   })
 }
 

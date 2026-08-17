@@ -15,12 +15,21 @@ from rapidfuzz import fuzz
 from app.core.config import Settings
 from app.models.book import SourceKind, SourceName
 from app.services.http_utils import get_json_with_retry
-from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
+from app.services.sources.base import (
+    BookMetadata,
+    DiscoveryQuery,
+    DiscoveryResult,
+    SourcePassage,
+    SourceResult,
+)
 from app.services.sources.matching import MIN_TITLE_SIMILARITY, title_similarity
 
 logger = structlog.get_logger(__name__)
 
 _VOLUMES_URL = "https://www.googleapis.com/books/v1/volumes"
+
+#: Google Books caps `maxResults` at 40 and answers 400 above it.
+_MAX_RESULTS_PER_QUERY = 40
 
 
 class GoogleBooksSource:
@@ -32,9 +41,21 @@ class GoogleBooksSource:
 
     def __init__(self, settings: Settings) -> None:
         self._timeout = settings.google_books_timeout_seconds
-        self._api_key = settings.google_books_api_key
         self._max_retries = settings.catalog_max_retries
+        self._discovery_retries = settings.recommendation_discovery_retries
         self._max_chars = settings.source_max_passage_chars
+        # The key travels in a **header**, never in the query string.
+        #
+        # `httpx` logs the full request URL at INFO, so a key in `params`
+        # is written verbatim into the application log on every single
+        # catalog call — and from there into anything the log is pasted
+        # into. Google accepts `X-Goog-Api-Key` for exactly this reason.
+        # Verified equivalent to `?key=`: same responses, same quota.
+        self._headers = (
+            {"X-Goog-Api-Key": settings.google_books_api_key}
+            if settings.google_books_api_key
+            else {}
+        )
 
     @property
     def name(self) -> SourceName:
@@ -51,8 +72,6 @@ class GoogleBooksSource:
             query += f' inauthor:"{author}"'
 
         params: dict[str, Any] = {"q": query, "maxResults": 5}
-        if self._api_key:
-            params["key"] = self._api_key
 
         fetch = await get_json_with_retry(
             _VOLUMES_URL,
@@ -60,6 +79,7 @@ class GoogleBooksSource:
             timeout=self._timeout,
             max_retries=self._max_retries,
             source=self.name.value,
+            headers=self._headers,
         )
         if not fetch.available:
             return SourceResult.unavailable(self.name)
@@ -116,6 +136,103 @@ class GoogleBooksSource:
 
         return best
 
+    async def discover(self, query: DiscoveryQuery, limit: int) -> DiscoveryResult:
+        """See `CandidateSource.discover`.
+
+        Uses the same volumes endpoint as `fetch`, with `subject:` /
+        `inauthor:` instead of `intitle:`. No similarity floor is applied
+        and no single "best" volume is chosen — the whole point here is to
+        come back with many books, and relevance is judged later by
+        embedding similarity to the reader's profile rather than by
+        string distance to a title nobody typed.
+
+        `printType=books` keeps magazines out of a book recommender.
+
+        **Retries are deliberately fewer here than in `fetch`.** A scan
+        waits on a single lookup and is worth retrying hard; discovery
+        issues one query per seed and its caller stops asking this source
+        after the first unavailable answer (see
+        `RecommendationService._discover_from_source`). Retrying each of
+        five queries three times against a host that is down is how a
+        background refresh turns into a two-minute request.
+        """
+        terms = []
+        if query.subject:
+            terms.append(f'subject:"{query.subject}"')
+        if query.author:
+            terms.append(f'inauthor:"{query.author}"')
+        if not terms:
+            return DiscoveryResult(source=self.name, candidates=[])
+
+        params: dict[str, Any] = {
+            "q": " ".join(terms),
+            "maxResults": min(limit, _MAX_RESULTS_PER_QUERY),
+            "printType": "books",
+            "orderBy": "relevance",
+        }
+
+        fetch = await get_json_with_retry(
+            _VOLUMES_URL,
+            params,
+            timeout=self._timeout,
+            max_retries=self._discovery_retries,
+            source=f"{self.name.value}_discover",
+            headers=self._headers,
+        )
+        if not fetch.available:
+            return DiscoveryResult.unavailable(self.name)
+        if not isinstance(fetch.payload, dict):
+            return DiscoveryResult(source=self.name, candidates=[])
+
+        candidates = [
+            self._metadata_from_volume(item["volumeInfo"], queried_author=None)
+            for item in fetch.payload.get("items", [])
+            if isinstance(item, dict)
+            and isinstance(item.get("volumeInfo"), dict)
+            and item["volumeInfo"].get("title")
+        ]
+        logger.info("google_books_discovered", query=query.label(), candidates=len(candidates))
+        return DiscoveryResult(source=self.name, candidates=candidates)
+
+    def _metadata_from_volume(
+        self, info: dict[str, Any], queried_author: str | None
+    ) -> BookMetadata:
+        """Maps a `volumeInfo` object onto the catalog fields it carries.
+
+        Shared by `fetch` and `discover` on purpose: a discovered book
+        becomes an ordinary `Book` row, and a second mapping written for
+        that path would be free to drift from this one — most likely in
+        `_pick_author`, whose contributor-list handling is the subtle part.
+
+        Args:
+            info: The `volumeInfo` object.
+            queried_author: The author read off the cover, when there was
+                one. Always `None` for discovery, where nobody scanned
+                anything.
+
+        Returns:
+            The metadata the volume carries.
+        """
+        identifiers = {
+            str(entry.get("type")): str(entry.get("identifier"))
+            for entry in info.get("industryIdentifiers", [])
+            if isinstance(entry, dict) and entry.get("identifier")
+        }
+        images = info.get("imageLinks") or {}
+        authors = info.get("authors") or []
+
+        return BookMetadata(
+            title=info.get("title"),
+            author=_pick_author([str(a) for a in authors], queried_author),
+            description=info.get("description"),
+            categories=[str(c) for c in (info.get("categories") or [])],
+            cover_url=images.get("thumbnail") or images.get("smallThumbnail"),
+            isbn_13=identifiers.get("ISBN_13"),
+            isbn_10=identifiers.get("ISBN_10"),
+            average_rating=info.get("averageRating"),
+            ratings_count=info.get("ratingsCount"),
+        )
+
     def _to_result(self, info: dict[str, Any], queried_author: str | None) -> SourceResult:
         """Maps a `volumeInfo` object onto a `SourceResult`.
 
@@ -127,26 +244,8 @@ class GoogleBooksSource:
         Returns:
             The metadata and description passage the volume carries.
         """
-        identifiers = {
-            str(entry.get("type")): str(entry.get("identifier"))
-            for entry in info.get("industryIdentifiers", [])
-            if isinstance(entry, dict) and entry.get("identifier")
-        }
-        images = info.get("imageLinks") or {}
-        authors = info.get("authors") or []
-        description = info.get("description")
-
-        metadata = BookMetadata(
-            title=info.get("title"),
-            author=_pick_author([str(a) for a in authors], queried_author),
-            description=description,
-            categories=[str(c) for c in (info.get("categories") or [])],
-            cover_url=images.get("thumbnail") or images.get("smallThumbnail"),
-            isbn_13=identifiers.get("ISBN_13"),
-            isbn_10=identifiers.get("ISBN_10"),
-            average_rating=info.get("averageRating"),
-            ratings_count=info.get("ratingsCount"),
-        )
+        metadata = self._metadata_from_volume(info, queried_author)
+        description = metadata.description
 
         passages: list[SourcePassage] = []
         if description:

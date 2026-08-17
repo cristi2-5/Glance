@@ -28,15 +28,20 @@ Client (mobile app)
       │  PUT  /books/{book_id}/library              →  reading status, rating
       │  GET/POST /books/{book_id}/journal          →  dated reading notes
       │  GET  /users/me/library|stats|preferences   →  history, counters, derived tastes
+      │  GET  /users/me/recommendations             →  ranked suggestions + why
       ▼
 FastAPI backend (local, on laptop)
       │
       ├── qwen/qwen3.6-27b (via Groq)  → title/author from the cover, runs first    [cloud, seconds]
       ├── RapidOCR (ONNX)              → fallback when Groq's guess is unconfirmed  [fast, <1 s]
       ├── Google Books / Open Library / Wikipedia → metadata + text about the book
-      ├── SQLite                       → users, jobs, books, sources, library_entries, journal_entries
-      ├── ChromaDB                     → embeddings (nomic-embed-text, local via Ollama), power both RAG *and* recommendations
-      │                                  retrieval is ALWAYS filtered on book_id — see the decision below
+      ├── SQLite                       → users, jobs, books, sources, library_entries, journal_entries,
+      │                                  recommendation_states
+      ├── ChromaDB                     → embeddings (nomic-embed-text, local via Ollama), two collections:
+      │                                  `book_chunks`   — one row per passage, retrieval ALWAYS filtered
+      │                                                    on book_id (Module 5's invariant, see below)
+      │                                  `book_profiles` — one row per whole book, queried ACROSS books
+      │                                                    (Module 6b) — separate collection, separate rule
       └── openai/gpt-oss-120b (via Groq) → summary generated from retrieved context, one citation per claim
 
 Local fallback (Settings.ai_provider="ollama"): Moondream and Llama 3.2 via
@@ -239,7 +244,8 @@ backend/
 │   │       ├── jobs.py             # GET /jobs/{id}
 │   │       └── users.py            # profile, history, preferences, recommendations
 │   ├── models/                     # SQLAlchemy: User, RefreshToken, Job, Book,
-│   │                               #   TextSource, LibraryEntry, JournalEntry
+│   │                               #   TextSource, LibraryEntry, JournalEntry,
+│   │                               #   RecommendationState
 │   ├── schemas/                    # Pydantic (request/response)
 │   ├── services/
 │   │   ├── ocr_service.py          # RapidOCR + image preprocessing
@@ -248,7 +254,7 @@ backend/
 │   │   ├── groq_client.py          # cloud backend (default): shared wrapper, retry, provider switch
 │   │   ├── http_utils.py           # shared GET+retry policy for every external source
 │   │   ├── sources/
-│   │   │   ├── base.py             # ContentSource Protocol, SourceResult
+│   │   │   ├── base.py             # ContentSource + CandidateSource Protocols, SourceResult
 │   │   │   ├── google_books.py     # metadata: description, categories, ISBN, rating
 │   │   │   ├── open_library.py     # CC0 gap-filler: subjects, description, cover by ISBN
 │   │   │   ├── wikipedia.py        # plot + Reception — the critical-opinion corpus
@@ -256,11 +262,12 @@ backend/
 │   │   ├── data_fetcher.py         # source orchestration + normalization + cache
 │   │   ├── chunking.py             # passages → ~500-token, sentence-aligned chunks
 │   │   ├── embeddings.py           # nomic-embed-text via Ollama — always local
-│   │   ├── vector_store.py         # Chroma + the mandatory book_id filter
+│   │   ├── vector_store.py         # `book_chunks` + the mandatory book_id filter
+│   │   ├── profile_store.py        # `book_profiles` — one vector per book, queried across books
 │   │   ├── rag_service.py          # ingest, retrieve, synthesize, verify citations
 │   │   ├── library_service.py      # history, status, ratings, derived preferences
 │   │   ├── journal_service.py      # dated reading notes, owned via the library entry
-│   │   └── recommendation_service.py
+│   │   └── recommendation_service.py  # profile vector, catalog discovery, ranking, explanations
 │   ├── workers/
 │   │   └── cover_pipeline.py       # the full job: OCR → fetch → ingest → summary
 │   └── db/
@@ -313,10 +320,24 @@ One module per session. Don't move on until the tests pass.
       **Absent ≠ null in a partial update.** `LibraryEntryUpdate` reads `model_fields_set`, so setting a status does not erase the rating while `{"rating": null}` still clears it. This is what lets the client fire one small `PUT` per control instead of shipping several fields together — the one request shape that can clobber.
       **Preferences are derived from books rated 4+, never declared.** A declared list is friction at signup and stale afterwards, and a profile header contradicting the history under it is exactly the inconsistency this module removes. Nothing rated yet yields empty lists and `based_on=0` — the honest answer, with the client asking for a rating rather than inventing tastes. Ties break alphabetically, or the chips reshuffle between two identical requests and read as a bug.
       **A correction removes the misidentified book from the library** — but only when it is an untouched scan artifact (no rating, no journal note, still `SCANNED`). Once the user has said something about it, it is theirs and it stays.
-- [ ] **Module 6b: Recommendations** — profile vector (rating-weighted average over entries rated ≥4), candidate generation, filtering by already-read books, score + explanation ("because you liked X"). Purely content-based — single user, guaranteed cold start, no collaborative filtering.
+- [x] **Module 6b: Recommendations** — *(backend + client, both done)* profile vector (rating-weighted average over entries rated ≥4), candidate discovery from the catalogs, filtering by the whole library, score + computed explanation ("because you liked X"). Purely content-based — single user, guaranteed cold start, no collaborative filtering. `GET /users/me/recommendations`. On the client: the recommendations tab runs on real data, with "Want to read" writing straight into the library.
+      *Done when:* a reader who has rated nothing gets an honest empty state, and no book already in their library is ever suggested. **Done** — 325 tests green, `mypy app/` clean, `ruff`/`black` clean, `tsc --noEmit` clean, `expo export` bundles. See `backend/docs/module-6b-recommendations.md` (local, gitignored).
       **Candidates cannot come from Chroma alone.** `book_chunks` holds only books the user has already scanned — that pool is exactly the set that must be filtered out, so the honest answer would always be zero recommendations. Cold start here is not "no ratings", it is "nothing to choose from". Candidates come from the catalog instead: Google Books / Open Library queried by the derived genres and authors, descriptions embedded locally with `nomic-embed-text`, ranked against the profile vector.
-      **Recommendations get their own Chroma collection, `book_profiles` (one vector per book).** They need a query *across* books, which is precisely what `vector_store.py`'s mandatory `book_id` filter forbids — and that filter is Module 5's central correctness invariant, not a preference. It is not weakened, flagged around, or given an exception: two collections, two rules, neither relaxed.
-      Low-rated books feed an exclusion set on author/genre rather than being subtracted from the profile vector — negative vector arithmetic produces results that cannot be explained. The explanation is computed from the nearest contributing book in the user's library, not generated by a model.
+      **Recommendations get their own Chroma collection, `book_profiles` (one vector per book).** They need a query *across* books, which is precisely what `vector_store.py`'s mandatory `book_id` filter forbids — and that filter is Module 5's central correctness invariant, not a preference. It is not weakened, flagged around, or given an exception: two collections, two rules, neither relaxed. `services/profile_store.py` is a separate module for the same reason — a cross-book query function sitting next to the mandatory-filter code would be an invitation.
+      **Discovery is a different question from lookup, so it is a different Protocol.** `ContentSource.fetch` resolves one known title and merges everything about it; `CandidateSource.discover` asks an open question and expects many partial answers. Both catalogs implement both, but folding them together would give `fetch` a plural return type it has no use for, and would let a discovery result reach the Module 4 merge — where "first non-`None` wins" assumes every result describes the *same book*.
+      **A discovered candidate is persisted as an ordinary `Book` row with `sources_fetched_at = None`.** That gives it a stable id the client can act on, lets its vector be cached instead of recomputed per request, and makes "Want to read" the existing library write rather than a second path. The null timestamp is what keeps it honest: `_is_fresh` reads exactly that field, so scanning the book later runs the real Module 4 fetch instead of serving a search hit as a settled lookup. An existing row is **never** overwritten by a candidate — it may carry gathered passages, a summary and a recovered cover that a bare search hit would flatten.
+      **The candidate pool is global; only the filtering is per user.** Two readers who like the same genre rank against the same rows. What is private is the profile vector, the exclusions and the ranking, all computed per request. The only per-user state is `RecommendationState` — `refreshed_at` plus a fingerprint of the derived preferences, because a TTL alone would serve yesterday's pool for a day after the reader first rates a book in a new genre, which is the exact moment their suggestions should change most.
+      **Low-rated books feed an exclusion set on author/genre**, never subtracted from the profile vector — negative vector arithmetic produces a direction corresponding to nothing the reader said, and therefore a suggestion that cannot be explained. And a like always beats a dislike: an author on both lists stays, because "I loved one and disliked another" is a fact about those books, not about the author. That override is only expressible because the signal is a set.
+      **3 is neither.** `FAVORITE_RATING_FLOOR = 4`, `DISLIKED_RATING_CEILING = 2`. If a 3 counted as a dislike, finishing one indifferent science-fiction novel would delete every science-fiction recommendation the reader could ever get.
+      **The explanation is computed from the nearest contributing book, not generated by a model.** A model asked to justify a recommendation writes something fluent about a book it was never shown — Module 5's failure mode, with no citation to check it against. A wrong reason beside a right recommendation is worse than no reason, because the reason is the part the reader trusts.
+      **Generic catalog labels are never used as discovery queries.** Google Books tags most novels `Fiction` and most children's books `Juvenile Fiction` — top-level BISAC headings that name the shelf, not the book. `subject:"Fiction"` returns an arbitrary slice of everything ever published, which then ranks badly and crowds out the granular subjects Open Library contributed.
+      **A book the catalogs describe with nothing but its own title gets no profile vector at all.** Embedding "Baltagul by Mihail Sadoveanu" encodes little more than the shapes of two proper nouns and would then rank arbitrarily against real candidates. Absent is more honest than arbitrary — and this is why `RecommendationList.based_on` counts the books that actually *fed* the vector, which is deliberately a different number from `LibraryPreferences.based_on`.
+      **`based_on` is what makes the two empty results different screens.** `based_on = 0` means there is nothing to build a profile from and the client asks for a rating; `based_on > 0` with an empty list means the catalogs simply had nothing past the reader's own library. Collapsing them into a bare empty array would make the app ask a reader who has rated forty books to please rate a book.
+      **Discovery paces its queries; fanning them out is what made Google Books 503.** Measured on the real API after the first run failed in production: fired concurrently, five discovery queries drew a 503 on **16 of 20** requests; paced one second apart, the identical queries returned 200 on **5 of 5**. Google sheds load on *burst rate per key* — the request shape (`printType`, `orderBy`, `maxResults`) was measured to make no difference whatsoever, so the obvious "it must be the new parameters" reading was wrong. Nothing before this module provoked it: the scan path queries three different hosts at once but asks each exactly one question, while discovery was the first code here to ask one host five questions at once. Sources now run in parallel with each other and **sequentially within themselves** (`recommendation_query_spacing_seconds`).
+      **A source is dropped for the rest of the run at its first unavailable answer.** By then the HTTP layer has already retried, so it means that catalog is down *now*, and each remaining seed would spend its full timeout rediscovering that. openlibrary.org has extended outages during which every request hangs to the timeout — without this, one of them holds a synchronous request for minutes. Discovery also retries less than a scan does (`recommendation_discovery_retries` below `catalog_max_retries`): a scan waits on one lookup and is worth retrying hard, discovery has five and gives up early.
+      **A degraded run gets a short TTL, not the full day.** The first version set `refreshed_at` whenever *anything* answered, so a run during which a catalog died was recorded as complete and its half-built pool pinned for 24 hours — one bad minute costing the reader a day of thin recommendations, with neither rescanning nor re-rating able to shake it loose. `RecommendationState.complete` now selects between `recommendation_candidate_ttl_hours` and `recommendation_degraded_ttl_hours`. Same shape as Module 4's short TTL for an empty book, and for the same reason: a degraded answer is not a settled fact.
+      **The Google Books key travels in an `X-Goog-Api-Key` header, never in the query string.** `httpx` logs the full request URL at INFO, so the `?key=` form wrote the key verbatim into the application log on every catalog call — which is how it left the machine and ended up pasted into a chat window. Verified equivalent: same responses, same quota. An absent key sends no header at all rather than an empty one, since a malformed credential and an anonymous request fail differently.
+      **Found and fixed while wiring this up: `LibraryBook.categories` rejected the `NULL` the column actually stores.** `Book.categories` is nullable and `BookDataFetcher` writes `None`, not `[]`, when no catalog supplied genres — the normal outcome for editions outside the English-language mainstream. Validating such a book raised, so *one* bare record answered the whole of `GET /users/me/library` with a 500. Shipped in 6a with the suite fully green, because every fixture happened to have categories. Now a `mode="before"` validator on the schema, where the nullable column meets the non-nullable contract.
 - [~] **Module 7: Client** — **started early, intentionally.** The mobile client (Expo + React Native + TypeScript) lives in `frontend/`, with its own `frontend/CLAUDE.md`. Testing on a **physical phone via Expo Go** (the Android emulator was rejected: ~1.5 GB RAM on a laptop with 7.4 GB that's also running Ollama). The `/dev` test HTML page is no longer needed — the real app replaces it.
       **The frontend is at parity with Modules 0-4** — caught up in the same session Module 4 landed, so neither side is ahead. See `frontend/docs/module-0-2-paritate-backend.md` (local, gitignored).
 
