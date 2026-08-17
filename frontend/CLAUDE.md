@@ -263,7 +263,17 @@ The frontend progresses **in parallel with the backend**, module by module. Don'
       **The recommendation card does not open the book screen.** A recommended book is by construction *not* in the library — that is the filter the backend applies before ranking — and the book screen renders from the library entry, so tapping through would land on "not in your library" every time. One offer, one action.
       **The card reads its shelved state from its own mutation, not from `useLibraryEntry`.** Querying per card would be a dozen requests whose answer is known in advance to be "no". And after "Want to read" the card *leaves the list*, because the mutation invalidates the `'library'` prefix and the book is now excluded from the refetched suggestions — so the feedback has to come from the mutation that is still in hand.
       **`libraryKeys.recommendations()` lives under the `'library'` prefix deliberately.** A rating is a direct input to the suggestion list, exactly as it is to the stats and the derived preferences. Leaving recommendations outside the prefix would let a suggestion sit there explained by "because you liked X" while X has just been re-rated 1.
-- [ ] **Module 7: Polish** — animations (`react-native-reanimated` already installed), empty states, offline handling, dark theme (tokens are structured for it).
+
+### The list ends at 6b — "Module 7: Polish" is closed unbuilt
+
+It used to sit here as an open TODO reading "animations, empty states, offline handling, dark theme". Closed deliberately: the app does everything it was specified to do, and this is the record of what that backlog actually contained, so reopening any of it starts from facts rather than from a four-word list.
+
+- **Empty states — already done, and not by this backlog.** Every screen from Module 4 onward handles loading, empty, error and success explicitly, because the convention below requires it. Module 6b went further and split *empty* in two (`based_on`). There was never anything left here.
+- **Offline handling — genuinely absent.** No `NetInfo`, no `onlineManager`, no cache persistence; the package isn't installed. Worth writing down for whoever picks it up: this app has **two** different offline states, and `NetInfo` only sees one of them. The backend runs on the laptop, so "phone has no network" and "phone has network but the laptop is asleep, uvicorn is stopped, or the phone has switched to mobile data" are different failures with different fixes — and `NetInfo` reports `isConnected: true` for the second. `ApiError` already collapses both into `status === 0` with a message that assumes the second case, which is wrong and confusing in the first. Splitting them is the actual work; wiring `onlineManager` is the easy half.
+- **Dark theme — absent, and the note that used to live here ("tokens are structured for it") was optimistic.** The tokens are *semantically named*, which makes a dark mapping possible, but `colors.ts` is a flat `const` read at module scope inside `StyleSheet.create` across 28 files (~230 references). A runtime switch means a `useTheme()` and theme-dependent styles in all of them.
+- **Animations — `react-native-reanimated` is installed and used nowhere.** The tactile feedback that exists is `expo-haptics`, in three files.
+
+One piece of debt is real regardless of the above: **41 references still point at the deprecated palette aliases** (`colors.accent` ×23, `surfaceMuted` ×5, `accentSoft` ×5, `background` ×3, `surface` ×2, `accentPressed` ×2, `amber` ×1). `colors.ts` says to delete each alias as its last consumer is migrated, and that never finished. It is also a precondition for a dark theme, since otherwise every alias needs a dark counterpart too.
 
 ## Useful commands
 
