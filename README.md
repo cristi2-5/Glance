@@ -97,7 +97,7 @@ The backend address needs no configuration: the client infers it from the Metro 
 ### Checks
 
 ```bash
-cd backend && pytest              # 325 tests; `-m "not slow"` skips the ones needing Ollama
+cd backend && pytest              # 337 tests; `-m "not slow"` skips the 3 that need Ollama
 cd backend && mypy app/ && ruff check . && black --check .
 cd frontend && npx tsc --noEmit && npx expo export --platform android
 ```
