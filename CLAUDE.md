@@ -32,7 +32,7 @@ Client (mobile app)
       ▼
 FastAPI backend (local, on laptop)
       │
-      ├── qwen/qwen3.6-27b (via Groq)  → title/author from the cover, runs first    [cloud, seconds]
+      ├── qwen/qwen3.8-27b (via Groq)  → title/author from the cover, runs first    [cloud, seconds]
       ├── RapidOCR (ONNX)              → fallback when Groq's guess is unconfirmed  [fast, <1 s]
       ├── Google Books / Open Library / Wikipedia → metadata + text about the book
       ├── SQLite                       → users, jobs, books, sources, library_entries, journal_entries,
@@ -55,16 +55,18 @@ Ollama take over the two Groq rows above, unchanged otherwise — see
 
 **What changed:** as of this decision, `Settings.ai_provider` (default `"groq"`) selects the backend for the two AI-inference steps that were previously Ollama-only:
 
-- **Vision** (cover title/author extraction): `moondream` (local, ~1.7 GB, 1.8B params) → `qwen/qwen3.6-27b` on Groq, multimodal, called with JSON mode so it returns `{"title": ..., "author": ...}` directly instead of free text that has to be parsed out of a rambling reply.
+- **Vision** (cover title/author extraction): `moondream` (local, ~1.7 GB, 1.8B params) → `qwen/qwen3.8-27b` on Groq, multimodal, called with JSON mode so it returns `{"title": ..., "author": ...}` directly instead of free text that has to be parsed out of a rambling reply.
 - **RAG summary generation** (Module 5): `llama3.2` (local) → `openai/gpt-oss-120b` on Groq.
 
 **Why:** on this laptop's hardware (7.4 GB RAM, CPU-only — see "Hardware constraints"), the locally-sized models were not good enough to ship. Moondream misidentified titles/authors often enough to undermine the OCR-first pipeline's fallback path, and CPU inference for both vision and summary generation was slow enough (15-40 s per call) to make the async job pipeline feel worse than it needed to. Groq's hosted inference is both faster and more accurate at this model size, at the cost of the original "100% local" guarantee.
 
 **What stayed local:** SQLite, ChromaDB, and embeddings (`nomic-embed-text` via Ollama) are unaffected — this pivot is scoped to vision and LLM-generation inference only. See "Strict rules" for the precise, current boundary.
 
-**How it's wired:** both integrations are config-driven, not hardcoded — `Settings.ai_provider: Literal["groq", "ollama"]` in `core/config.py`, plus `Settings.vision_model` / `Settings.llm_model` computed properties that resolve to the right model name for whichever provider is active. `app/services/groq_client.py` defines `AsyncGroqClient`, which is call-compatible with the existing `OllamaClient` Protocol (`app/services/ollama_client.py`) — same `generate(model, prompt, images, format, options)` shape — so `VisionService` and `RagService` don't know or care which backend they're talking to. `get_active_ai_client()` is the single switch point; reinstating the local-only setup later means setting `AI_PROVIDER=ollama` in `.env`, no code change. Groq errors (including qwen/qwen3.6-27b's preview-model rate limits and instability) are retried with backoff and surfaced as `AIProviderUnavailable`, never left to propagate raw.
+**How it's wired:** both integrations are config-driven, not hardcoded — `Settings.ai_provider: Literal["groq", "ollama"]` in `core/config.py`, plus `Settings.vision_model` / `Settings.llm_model` computed properties that resolve to the right model name for whichever provider is active. `app/services/groq_client.py` defines `AsyncGroqClient`, which is call-compatible with the existing `OllamaClient` Protocol (`app/services/ollama_client.py`) — same `generate(model, prompt, images, format, options)` shape — so `VisionService` and `RagService` don't know or care which backend they're talking to. `get_active_ai_client()` is the single switch point; reinstating the local-only setup later means setting `AI_PROVIDER=ollama` in `.env`, no code change. Groq errors (including the vision model's preview-model rate limits and instability) are retried with backoff and surfaced as `AIProviderUnavailable`, never left to propagate raw.
 
 **`reasoning_effort` is per-model, and the wrong value is a 400 on every call.** Both Groq models here are reasoning models, and we ask them for small structured JSON — left at their defaults they spend the completion budget on hidden chain-of-thought and get truncated mid-object. So it is turned down as far as each allows. But *how far* differs by family and Groq validates it server-side: Qwen3 accepts `none`/`default`, while `openai/gpt-oss-120b` cannot turn reasoning off at all and rejects anything but `low`/`medium`/`high`. A single constant in `groq_client.py` therefore cannot be right for both — it shipped as `"none"`, which was correct for vision and made **every** RAG summary fail with a 400 while the vision path stayed green. The value now comes from `Settings.groq_vision_reasoning_effort` / `groq_llm_reasoning_effort`, resolved by `Settings.groq_reasoning_effort_for(model)`, which returns `None` for any unrecognised model so nothing is guessed. **Changing a Groq model name means checking its reasoning vocabulary too.** Note the 400 is deliberately not retried (it is a request-shaping bug, not a transient one), which is why it surfaced instantly rather than degrading — the right trade-off, but it means a shape error is total.
+
+**Groq retires preview models, and a retired vision model fails quietly.** `qwen/qwen3.6-27b` was shut down on 2026-09-14 in favour of `qwen/qwen3.8-27b` (see console.groq.com/docs/deprecations). Every vision call then gets a non-retryable error, which becomes `AIProviderUnavailable`, which `VisionService` treats as "the model failed" and hands over to OCR — so scans keep completing, just with noticeably worse recognition. Nothing is red. Qwen 3.8 accepts the same `reasoning_effort` vocabulary (`none`/`default`/`low`/`medium`/`high`), so the swap was a name change only. Note that `.env` sets `GROQ_VISION_MODEL` explicitly and overrides the code default, so a model swap has to be made in **both**. Check the deprecations page whenever recognition quality drops for no visible reason.
 
 ### Vision: vision-model-first, OCR as fallback
 
@@ -194,7 +196,7 @@ The vectors generated when a book is ingested serve both RAG (Module 5) and reco
 
 | Role | Provider | Model | Notes |
 |---|---|---|---|
-| Vision (primary, OCR is the fallback) | Groq (default) | `qwen/qwen3.6-27b` | multimodal, JSON mode, preview model — see retry notes in the pivot decision above |
+| Vision (primary, OCR is the fallback) | Groq (default) | `qwen/qwen3.8-27b` | multimodal, JSON mode, preview model — see retry notes in the pivot decision above |
 | Vision (primary, OCR is the fallback) | Ollama (`ai_provider="ollama"`) | `moondream` | ~1.7 GB RAM, local |
 | Summary LLM (Module 5) | Groq (default) | `openai/gpt-oss-120b` | |
 | Summary LLM (Module 5) | Ollama (`ai_provider="ollama"`) | `llama3.2` (3B) | ~2.0 GB RAM, local; fallback `llama3.2:1b`, then `qwen3:4b` |

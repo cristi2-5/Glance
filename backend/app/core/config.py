@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     # Multimodal, supports JSON mode — used to extract {"title", "author"}
     # directly from a cover photo. Marked "preview" by Groq: see
     # `groq_client.py` for the retry/error handling this implies.
-    groq_vision_model: str = "qwen/qwen3.6-27b"
+    groq_vision_model: str = "qwen/qwen3.8-27b"
     # RAG summary generation (Module 5).
     groq_llm_model: str = "openai/gpt-oss-120b"
     groq_request_timeout_seconds: int = 60

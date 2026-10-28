@@ -86,7 +86,7 @@ That path is still there and still maintained. Setting `AI_PROVIDER=ollama` move
 
 **Client** — [React Native](https://reactnative.dev) and [Expo](https://expo.dev) with strict TypeScript, expo-router for navigation, TanStack Query for server state, Zustand for session state, and tokens stored in the device Keychain/Keystore.
 
-**Models** — `qwen/qwen3.6-27b` reads covers, `openai/gpt-oss-120b` writes summaries, `nomic-embed-text` produces every embedding locally.
+**Models** — `qwen/qwen3.8-27b` reads covers, `openai/gpt-oss-120b` writes summaries, `nomic-embed-text` produces every embedding locally.
 
 ## Running it
 

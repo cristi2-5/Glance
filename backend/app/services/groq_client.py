@@ -29,7 +29,7 @@ from app.services.ollama_client import OllamaClient, get_ollama_client
 logger = structlog.get_logger(__name__)
 
 # Retried with backoff: connection/timeout failures, rate limits, and 5xx —
-# all transient. qwen/qwen3.6-27b is a Groq preview model, so rate limiting
+# all transient. qwen/qwen3.8-27b is a Groq preview model, so rate limiting
 # and server-side instability are expected more often than for a GA model.
 _RETRYABLE_EXCEPTIONS = (APIConnectionError, RateLimitError, InternalServerError)
 _BACKOFF_BASE_SECONDS = 0.5
