@@ -1,0 +1,15 @@
+# .env holds secrets; they are injected at run time, never baked in.
+**/.env
+**/.env.*
+!**/.env.example
+.venv
+data/
+docs/
+**/__pycache__
+**/*.pyc
+.mypy_cache
+.ruff_cache
+.pytest_cache
+*.egg-info
+# tests/ is NOT ignored: the `test` stage needs it. The runtime stage simply
+# never COPYs it, so it does not reach the shipped image.

@@ -109,6 +109,15 @@ uvicorn app.main:app --reload --host 0.0.0.0
 
 `--host 0.0.0.0` matters — without it the server only listens on localhost and your phone can't reach it.
 
+**With Docker (instead of the venv + a local Ollama):**
+
+```bash
+cp backend/.env.example backend/.env   # fill in JWT_SECRET_KEY and GROQ_API_KEY
+docker compose up --build
+```
+
+This starts the API and an Ollama container with `nomic-embed-text` already baked in. On a machine with little RAM, quit the native Ollama app first — the container has its own copy of the model. Your phone reaches the backend at `http://<laptop-ip>:8000`. With `AI_PROVIDER=ollama`, pull the local models into the container first: `docker compose exec ollama ollama pull moondream` and `docker compose exec ollama ollama pull llama3.2`.
+
 **App:**
 
 ```bash

@@ -1,0 +1,37 @@
+# Runs Glance the way it will run in the cloud: two containers on a private network.
+services:
+  api:
+    build: ./backend
+    # Secrets are injected at run time, never baked into the image
+    # (Key Vault will play this role in Azure).
+    env_file: backend/.env
+    environment:
+      # Inside the compose network, the embedding server is reached by service name.
+      OLLAMA_HOST: http://ollama:11434
+      # Explicit so the data location never depends on where the code sits.
+      DATABASE_URL: sqlite+aiosqlite:////app/data/glance.db
+      CHROMA_PERSIST_DIR: /app/data/chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      # SQLite + Chroma live on a named volume so they survive container rebuilds.
+      - glance-data:/app/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ollama:
+    build: ./ollama
+    # No "ports:" on purpose: only the api container can reach it. This mirrors
+    # Azure Container Apps' internal ingress.
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  glance-data:
