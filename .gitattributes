@@ -1,0 +1,9 @@
+# Files that run inside Linux containers keep Unix line endings on every
+# checkout. A Windows clone with core.autocrlf would otherwise add \r, and a
+# Dockerfile RUN line ending in "\" + "\r" no longer continues the command.
+Dockerfile            text eol=lf
+*.Dockerfile          text eol=lf
+.dockerignore         text eol=lf
+docker-compose.yml    text eol=lf
+requirements.lock     text eol=lf
+*.sh                  text eol=lf
