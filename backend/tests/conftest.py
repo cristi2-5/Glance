@@ -30,9 +30,18 @@ from app.models.vector import BookChunk, BookProfileRow  # noqa: F401
 from app.services.data_fetcher import BookDataFetcher
 from app.services.ocr_service import OcrService, TextCandidate
 from app.services.sources.base import BookMetadata, SourcePassage, SourceResult
+from app.services.storage import AzureBlobStore, AzureJobQueue, get_blob_store, get_job_queue
 from app.services.title_lookup import BookCandidate
 from app.services.vision_service import VisionService
-from tests.fakes import FakeContentSource, FakeOcrEngine, FakeOllamaClient, FakeTitleLookup
+from app.workers.queue_worker import QueueWorker
+from tests.fakes import (
+    FakeContentSource,
+    FakeOcrEngine,
+    FakeOllamaClient,
+    FakeTitleLookup,
+    InMemoryBlobStore,
+    InMemoryJobQueue,
+)
 
 DEFAULT_TEST_DATABASE_URL = "postgresql+asyncpg://glance:glance@127.0.0.1:5433/glance_test"
 
@@ -60,10 +69,9 @@ def _build_fake_vision_service() -> VisionService:
 def _build_fake_data_fetcher() -> BookDataFetcher:
     """A `BookDataFetcher` over scripted sources, for the HTTP test suite.
 
-    The background task started by `POST /books/analyze-cover` runs for
-    real under `ASGITransport`, so without this override every job test
-    would reach out to Google Books, Open Library and Wikipedia. Scripted
-    to match the fake vision service's "Dune".
+    The queue worker fixture runs the real pipeline, so without this every
+    job test would reach out to Google Books, Open Library and Wikipedia.
+    Scripted to match the fake vision service's "Dune".
     """
     google = FakeContentSource(
         SourceName.GOOGLE_BOOKS,
@@ -152,6 +160,74 @@ def _database_schema() -> None:
         )
 
 
+async def _probe_azurite() -> None:
+    """Round-trips a blob and a queue message through the configured storage."""
+    from app.services.storage import JobKind, JobMessage
+
+    settings = get_settings()
+    blobs = AzureBlobStore(settings.azure_storage_connection_string, "glance-startup-check")
+    queue = AzureJobQueue(settings.azure_storage_connection_string, "glance-startup-check")
+    try:
+        await blobs.put("probe", b"x")
+        await blobs.delete("probe")
+        await queue.send(JobMessage(kind=JobKind.SCAN, job_id=1))
+        received = await queue.receive(1)
+        assert received is not None
+        await queue.delete(received)
+    finally:
+        await blobs.close()
+        await queue.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _azurite(_database_schema: None) -> None:
+    """Requires Azurite (Blob + Queue emulator); fails the run if it is absent.
+
+    Same stance as PostgreSQL: the storage adapters are tested against the
+    real emulator, because a fake would only prove our code agrees with our
+    own assumptions about queue semantics. Never skips.
+    """
+    try:
+        asyncio.run(_probe_azurite())
+    except Exception as exc:  # noqa: BLE001 - any failure here means "no usable storage"
+        pytest.exit(
+            "Azurite (the Azure Storage emulator) is required for the test suite but could "
+            f"not be used ({type(exc).__name__}: {exc}). Start it with "
+            "`docker compose up -d postgres azurite` (from the repo root), or point "
+            "AZURE_STORAGE_CONNECTION_STRING at a storage account / emulator.",
+            returncode=2,
+        )
+
+
+@pytest.fixture
+def blob_store() -> InMemoryBlobStore:
+    """The in-memory blob store the api routes and the queue worker share in a test."""
+    return InMemoryBlobStore()
+
+
+@pytest.fixture
+def job_queue() -> InMemoryJobQueue:
+    """The in-memory job queue the api routes and the queue worker share in a test."""
+    return InMemoryJobQueue()
+
+
+@pytest.fixture
+def queue_worker(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    blob_store: InMemoryBlobStore,
+    job_queue: InMemoryJobQueue,
+) -> QueueWorker:
+    """A queue worker over the fakes: fake vision, scripted catalog, test database."""
+    return QueueWorker(
+        queue=job_queue,
+        blob_store=blob_store,
+        session_factory=db_session_factory,
+        vision_service=_build_fake_vision_service(),
+        data_fetcher=_build_fake_data_fetcher(),
+        settings=get_settings(),
+    )
+
+
 @pytest.fixture
 async def db_session_factory(
     _database_schema: None,
@@ -196,6 +272,8 @@ async def db_session_factory(
 @pytest.fixture
 async def client(
     db_session_factory: async_sessionmaker[AsyncSession],
+    blob_store: InMemoryBlobStore,
+    job_queue: InMemoryJobQueue,
 ) -> AsyncIterator[AsyncClient]:
     """Async HTTP client bound to the app, with the database overridden to a test one.
 
@@ -211,6 +289,8 @@ async def client(
     app.dependency_overrides[get_session_factory] = lambda: db_session_factory
     app.dependency_overrides[build_vision_service] = _build_fake_vision_service
     app.dependency_overrides[build_data_fetcher] = _build_fake_data_fetcher
+    app.dependency_overrides[get_blob_store] = lambda: blob_store
+    app.dependency_overrides[get_job_queue] = lambda: job_queue
     transport = ASGITransport(app=app)
     try:
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

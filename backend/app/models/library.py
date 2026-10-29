@@ -46,6 +46,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -93,6 +94,10 @@ class LibraryEntry(Base):
         status: `ReadingStatus` — where the book stands for this user.
         rating: The user's rating, 1-5, or `None` if never rated. The
             primary signal behind the Module 6 profile vector.
+        photo_blob: Name of the reader's latest photo of this book in Blob
+            Storage, or `None`. The entry owns that blob: removing the
+            entry or replacing the pointer deletes it. Served only through
+            `GET /books/{book_id}/library/photo`, never by URL.
         journal: The reader's dated notes about this book, oldest first.
             Deleted with the entry.
         scan_count: How many times this user has scanned this cover. The
@@ -135,6 +140,8 @@ class LibraryEntry(Base):
     )
     rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    photo_blob: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     scan_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     first_scanned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -163,3 +170,12 @@ class LibraryEntry(Base):
         without carrying every word of every note.
         """
         return len(self.journal)
+
+    @property
+    def has_photo(self) -> bool:
+        """Whether the reader's own photo of this book can be served.
+
+        Read by `LibraryEntryRead`; the blob name itself never leaves the
+        server.
+        """
+        return self.photo_blob is not None

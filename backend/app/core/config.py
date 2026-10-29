@@ -40,6 +40,42 @@ class Settings(BaseSettings):
     # Windows that tries IPv6 first and adds ~2 s per connection).
     database_url: str = "postgresql+asyncpg://glance:glance@127.0.0.1:5433/glance"
 
+    # Blob + Queue Storage (cloud step 4)
+    #
+    # The scan photos (private Blob container) and the job queue live in an
+    # Azure Storage account. The default is Azurite's well-known development
+    # account: its name and key are published in Microsoft's documentation and
+    # protect nothing, so having them here is not a leak. Host-side runs and
+    # tests reach the emulator through the compose port mappings
+    # (`docker compose up -d azurite`); compose overrides this with the
+    # in-network `azurite` hostname. Against real Azure the connection changes
+    # (managed identity, step 5) and nothing else does.
+    azure_storage_connection_string: str = (
+        "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;"
+        "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/"
+        "K1SZFPTOtr/KBHBeksoGMGw==;"
+        "BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+        "QueueEndpoint=http://127.0.0.1:10001/devstoreaccount1;"
+    )
+    # Private container holding the normalised scan photos, one JPEG per scan.
+    scan_container: str = "scans"
+    # Queue carrying `{"kind", "job_id"}` messages from the api to the queue worker.
+    job_queue: str = "cover-jobs"
+    # How long a received message stays invisible to other queue workers. Must
+    # outlast the pipeline (30-120 s): if it expires mid-job, a second queue
+    # worker picks the same job up. If a queue worker dies, this is how long
+    # until another one retries.
+    job_visibility_timeout_seconds: int = 300
+    # A message delivered more often than this is poison: the job is failed
+    # and the message dropped instead of crashing a queue worker forever.
+    job_max_attempts: int = 3
+    # An empty queue is polled with a growing pause (fewer storage
+    # transactions, which are billed in Azure), reset by the next message.
+    queue_idle_backoff_min_seconds: float = 1.0
+    queue_idle_backoff_max_seconds: float = 10.0
+    # How long a browser/phone may reuse a downloaded scan photo.
+    scan_photo_cache_seconds: int = 3600
+
     # Auth / JWT
     jwt_secret_key: str = "change-this-key-in-.env"
     jwt_algorithm: str = "HS256"

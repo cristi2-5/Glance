@@ -1,19 +1,19 @@
 """Routes for books: cover analysis, the RAG summary, the library entry, the journal."""
 
+import asyncio
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, File, Response, UploadFile, status
+from fastapi import APIRouter, File, Response, UploadFile, status
 
-from app.api.deps import (
-    CurrentUser,
-    DataFetcherDep,
-    DbSession,
-    RagServiceDep,
-    SessionFactory,
-    VisionServiceDep,
-)
+from app.api.deps import BlobStoreDep, CurrentUser, DbSession, JobQueueDep, RagServiceDep
 from app.core.config import get_settings
-from app.core.exceptions import FileTooLarge, ResourceNotFound, UnsupportedFileType
+from app.core.exceptions import (
+    FileTooLarge,
+    ResourceNotFound,
+    StorageUnavailable,
+    UnsupportedFileType,
+)
 from app.models.book import Book
 from app.models.job import Job, JobStatus
 from app.models.journal import JournalEntry
@@ -27,7 +27,9 @@ from app.schemas.library import (
 )
 from app.schemas.summary import BookSummary
 from app.services import journal_service, library_service
-from app.workers.cover_pipeline import process_cover
+from app.services.image_preprocessing import preprocess_cover
+from app.services.storage import JobKind, JobMessage
+from app.workers.cover_pipeline import delete_photo_blob, fail_job
 
 router = APIRouter(prefix="/books", tags=["books"])
 
@@ -64,28 +66,33 @@ async def _read_and_validate(file: UploadFile) -> bytes:
 
 @router.post("/analyze-cover", status_code=status.HTTP_202_ACCEPTED, response_model=JobCreated)
 async def analyze_cover(
-    background_tasks: BackgroundTasks,
     db: DbSession,
-    session_factory: SessionFactory,
     current_user: CurrentUser,
-    vision_service: VisionServiceDep,
-    data_fetcher: DataFetcherDep,
+    blob_store: BlobStoreDep,
+    job_queue: JobQueueDep,
     file: Annotated[UploadFile, File()],
 ) -> JobCreated:
-    """Receives a photo of a book cover and starts the asynchronous analysis.
+    """Receives a photo of a book cover and queues the asynchronous analysis.
 
-    Creates a job in `pending` state, then hands it off to a background
-    task that moves through `running` → `done`. The client immediately
-    receives the job id and polls `GET /jobs/{job_id}`.
+    Normalises the photo once (EXIF rotation, 768 px, JPEG — the same
+    `preprocess_cover` vision uses, so the stored file displays on every
+    phone, unlike a raw HEIC), stores it in the private blob container and
+    puts a `{"kind": "scan", "job_id"}` message on the queue. The queue
+    worker does the rest; the client immediately receives the job id and
+    polls `GET /jobs/{job_id}`.
+
+    **The order is deliberate.** The `pending` job is committed *first*: a
+    fast queue worker must never dequeue a message for a job that is not in
+    the database yet. Then the upload, then the enqueue — so a message only
+    ever points at a photo that exists. If either storage step fails, the
+    job is marked `failed` (and the photo removed) before the 503, so
+    nothing is left half-done.
 
     Args:
-        background_tasks: The FastAPI background task queue.
         db: The current database session.
-        session_factory: The session factory passed to the background task.
         current_user: The authenticated user, owner of the job.
-        vision_service: The vision service used to identify the cover.
-        data_fetcher: The metadata/source fetcher used once the cover is
-            recognized.
+        blob_store: Where the photo is stored.
+        job_queue: Where the job message is sent.
         file: The cover image (JPEG, PNG, or HEIC/HEIF, max 8 MB).
 
     Returns:
@@ -94,17 +101,27 @@ async def analyze_cover(
     Raises:
         UnsupportedFileType: If the file type is not accepted.
         FileTooLarge: If the file exceeds the maximum size.
+        ImageProcessingFailed: If the file is not a decodable image.
+        StorageUnavailable: If the photo could not be stored or the job
+            could not be queued (the job is left `failed`).
     """
     content = await _read_and_validate(file)
+    # CPU-bound (decode, resize, re-encode): keep it off the event loop.
+    prepared = await asyncio.to_thread(preprocess_cover, content)
 
-    job = Job(user_id=current_user.id, status=JobStatus.PENDING.value)
+    # Unguessable and never reused, so a blob name identifies one upload.
+    photo_blob = f"{uuid.uuid4().hex}.jpg"
+    job = Job(user_id=current_user.id, status=JobStatus.PENDING.value, photo_blob=photo_blob)
     db.add(job)
     await db.commit()
     await db.refresh(job)
 
-    background_tasks.add_task(
-        process_cover, job.id, content, session_factory, vision_service, data_fetcher
-    )
+    try:
+        await blob_store.put(photo_blob, prepared.jpeg_bytes)
+        await job_queue.send(JobMessage(kind=JobKind.SCAN, job_id=job.id))
+    except StorageUnavailable:
+        await fail_job(db, job, "The scan could not be queued. Please try again.", blob_store)
+        raise
     return JobCreated(job_id=job.id)
 
 
@@ -178,6 +195,48 @@ async def read_library_entry(
     return await library_service.get_entry(db, current_user.id, book_id)
 
 
+@router.get("/{book_id}/library/photo")
+async def read_library_photo(
+    book_id: int,
+    db: DbSession,
+    current_user: CurrentUser,
+    blob_store: BlobStoreDep,
+) -> Response:
+    """Returns the current user's own photo of this book, as a JPEG.
+
+    The photo container is private and there are no public or SAS links:
+    the api is the only reader, and it resolves the blob **through the
+    user's library entry**, the same ownership rule as the journal. Another
+    reader's entry for the same book simply does not match, so their photo
+    is unreachable and indistinguishable from none.
+
+    Args:
+        book_id: The book whose photo to return.
+        db: The current database session.
+        current_user: The authenticated user.
+        blob_store: Where the photo is stored.
+
+    Returns:
+        The image, cacheable by this user's client only (`private`).
+
+    Raises:
+        ResourceNotFound: If this user has no entry for the book, or the
+            entry has no photo.
+        StorageUnavailable: If the storage service could not be reached.
+    """
+    entry = await library_service.get_entry(db, current_user.id, book_id)
+    if entry.photo_blob is None:
+        raise ResourceNotFound("You have no photo of this book.")
+
+    data = await blob_store.get(entry.photo_blob)
+    max_age = get_settings().scan_photo_cache_seconds
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": f"private, max-age={max_age}"},
+    )
+
+
 @router.put("/{book_id}/library", response_model=LibraryEntryRead)
 async def upsert_library_entry(
     book_id: int,
@@ -215,17 +274,20 @@ async def remove_library_entry(
     book_id: int,
     db: DbSession,
     current_user: CurrentUser,
+    blob_store: BlobStoreDep,
 ) -> Response:
     """Removes a book from the current user's library.
 
     The cached `Book` row itself is untouched: it is shared by everyone
     who scans the same cover, and deleting it would throw away the
     fetched sources and generated summary that other libraries point at.
+    The reader's own photo of the book is theirs, and goes with the entry.
 
     Args:
         book_id: The book to remove from this library.
         db: The current database session.
         current_user: The authenticated user.
+        blob_store: Where the entry's photo is stored.
 
     Returns:
         An empty `204` response.
@@ -233,7 +295,8 @@ async def remove_library_entry(
     Raises:
         ResourceNotFound: If this user has no entry for this book.
     """
-    await library_service.delete_entry(db, current_user.id, book_id)
+    photo = await library_service.delete_entry(db, current_user.id, book_id)
+    await delete_photo_blob(blob_store, photo)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

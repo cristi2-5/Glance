@@ -5,6 +5,8 @@ from io import BytesIO
 from httpx import AsyncClient
 from PIL import Image
 
+from app.workers.queue_worker import QueueWorker
+
 EMAIL_A = "reader.a@example.com"
 EMAIL_B = "reader.b@example.com"
 PASSWORD = "super-secret-password"
@@ -32,7 +34,9 @@ def _auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def test_analyze_cover_creates_job_that_becomes_done(client: AsyncClient) -> None:
+async def test_analyze_cover_creates_job_that_becomes_done(
+    client: AsyncClient, queue_worker: QueueWorker
+) -> None:
     token = await _register_and_login(client, EMAIL_A)
 
     creation = await client.post(
@@ -42,6 +46,13 @@ async def test_analyze_cover_creates_job_that_becomes_done(client: AsyncClient) 
     )
     assert creation.status_code == 202
     job_id = creation.json()["job_id"]
+
+    # The api only queued the work: until a queue worker takes the message
+    # the job stays pending.
+    pending = await client.get(f"/jobs/{job_id}", headers=_auth_header(token))
+    assert pending.json()["status"] == "pending"
+
+    assert await queue_worker.process_one() is True
 
     read = await client.get(f"/jobs/{job_id}", headers=_auth_header(token))
     assert read.status_code == 200

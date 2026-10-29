@@ -20,6 +20,14 @@ user's library. It runs *after* the job has been committed and is
 swallowed on failure, for the same reason the fetch stage is — the user
 waited 30-120 s for a recognition, and a history row that failed to write
 must not turn that into a failed scan.
+
+Cloud step 4 moved this module's callers: it no longer runs inside the api
+process but in the queue worker (`app/workers/queue_worker.py`), which loads
+the photo from Blob Storage and hands the bytes in. The scan photo's
+lifecycle is handled here, next to the job state it follows: a `failed` job
+deletes its photo, a `done` one hands it to the reader's library entry (see
+`library_service.attach_photo` for the rule), and a correction moves it to
+the corrected book's entry.
 """
 
 from typing import Any
@@ -27,11 +35,12 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.exceptions import GlanceError
+from app.core.exceptions import GlanceError, StorageUnavailable
 from app.models.book import Book
 from app.models.job import Job, JobStatus
 from app.services import library_service
 from app.services.data_fetcher import BookDataFetcher
+from app.services.storage import BlobStore
 from app.services.vision_service import VisionService
 
 logger = structlog.get_logger(__name__)
@@ -43,22 +52,29 @@ async def process_cover(
     session_factory: async_sessionmaker[AsyncSession],
     vision_service: VisionService,
     data_fetcher: BookDataFetcher | None = None,
+    blob_store: BlobStore | None = None,
 ) -> None:
     """Runs the cover analysis pipeline and updates the job's state.
 
     Opens its own database session from `session_factory` — the request
-    session that created the job has already closed by the time the
-    background task starts.
+    session that created the job closed long before the queue worker took
+    the message.
+
+    Safe to run twice for the same job (the queue delivers at least once):
+    the book fetch is cached and the library write is unique per user and
+    book.
 
     Args:
         job_id: The id of the job to update.
-        image_content: The raw content of the uploaded image.
+        image_content: The (already normalised) cover image bytes.
         session_factory: The session factory to use (lets tests inject an
             isolated database instead of the production one).
         vision_service: The vision service used to identify the cover (lets
             tests inject a fake instead of running RapidOCR/Ollama).
         data_fetcher: The metadata/source fetcher. `None` skips the fetch
             stage entirely and completes the job on vision data alone.
+        blob_store: Where the job's photo lives. `None` skips the photo
+            lifecycle entirely (jobs without a photo).
     """
     async with session_factory() as db:
         job = await db.get(Job, job_id)
@@ -73,15 +89,13 @@ async def process_cover(
             identification = await vision_service.identify(image_content)
         except GlanceError as exc:
             logger.warning("cover_pipeline_failed", job_id=job_id, error=exc.message)
-            job.status = JobStatus.FAILED.value
-            job.error = exc.message
-            await db.commit()
+            await fail_job(db, job, exc.message, blob_store)
             return
         except Exception:
             logger.exception("cover_pipeline_unexpected_error", job_id=job_id)
-            job.status = JobStatus.FAILED.value
-            job.error = "An unexpected error occurred while analyzing the cover."
-            await db.commit()
+            await fail_job(
+                db, job, "An unexpected error occurred while analyzing the cover.", blob_store
+            )
             return
 
         result: dict[str, Any] = {**identification.model_dump(), **EMPTY_BOOK_FIELDS}
@@ -99,8 +113,65 @@ async def process_cover(
         # After the job is finished, never before: the library entry is a
         # convenience, and failing to write it must not cost the user the
         # scan they waited 30-120 s for.
+        #
+        # With no resolved book (the catalog stage blew up) there is no entry
+        # to own the photo, so it stays on the job: a correction can still
+        # attach it to the book the reader names.
         if book is not None:
-            await _record_in_library(db, job.user_id, book.id, job_id)
+            await _record_in_library(db, job.user_id, book.id, job_id, job.photo_blob, blob_store)
+
+
+async def fail_job(
+    db: AsyncSession, job: Job, message: str, blob_store: BlobStore | None = None
+) -> None:
+    """Marks a job `failed` and deletes its photo, unless a library entry owns it.
+
+    A scan that failed has no book to attach its photo to, and nothing
+    would ever reference the blob again, so it is removed together with the
+    job's pointer. The database change is committed first: a blob that then
+    fails to delete is merely an unreferenced file, never a dangling pointer.
+
+    **A pointer never dangles.** If a library entry still points at the same
+    blob (a job failing after its photo was already handed over), the blob
+    is kept: only the job's own pointer is dropped.
+
+    Args:
+        db: The session holding `job`.
+        job: The job to fail.
+        message: The user-facing error, stored on the job.
+        blob_store: Where the photo lives, or `None` to leave storage alone.
+    """
+    photo = job.photo_blob
+    job.status = JobStatus.FAILED.value
+    job.error = message
+    job.photo_blob = None
+    await db.commit()
+    if photo is not None and await library_service.photo_is_owned(db, photo):
+        logger.info("photo_kept_for_library_entry", job_id=job.id, blob=photo)
+        return
+    await delete_photo_blob(blob_store, photo, job.id)
+
+
+async def delete_photo_blob(
+    blob_store: BlobStore | None, name: str | None, job_id: int | None = None
+) -> None:
+    """Deletes a photo blob, logging instead of raising when storage is down.
+
+    Cleanup is best-effort by design: the database already stopped pointing
+    at the blob, and a storage outage must not fail or re-run a job that
+    otherwise finished. The worst case is one orphaned ~50 KB JPEG.
+
+    Args:
+        blob_store: The store, or `None` (nothing to do).
+        name: The blob to delete, or `None` (nothing to do).
+        job_id: The job id, for log correlation (`None` outside a job).
+    """
+    if blob_store is None or name is None:
+        return
+    try:
+        await blob_store.delete(name)
+    except StorageUnavailable:
+        logger.warning("photo_blob_cleanup_failed", job_id=job_id, blob=name)
 
 
 async def refresh_book_data(
@@ -109,14 +180,16 @@ async def refresh_book_data(
     author: str | None,
     session_factory: async_sessionmaker[AsyncSession],
     data_fetcher: BookDataFetcher,
+    blob_store: BlobStore | None = None,
+    previous_book_id: int | None = None,
 ) -> None:
     """Re-fetches a corrected job's book data and completes the job.
 
-    Runs after `PATCH /jobs/{id}/correction`. When the user overrides the
-    recognized title, everything the catalog returned for the *previous*
-    title — cover, blurb, categories, rating — describes the wrong book,
-    so the correction endpoint clears those fields and schedules this to
-    repopulate them.
+    Runs in the queue worker after `PATCH /jobs/{id}/correction`. When the
+    user overrides the recognized title, everything the catalog returned for
+    the *previous* title — cover, blurb, categories, rating — describes the
+    wrong book, so the correction endpoint clears those fields and enqueues
+    this to repopulate them.
 
     The job is left in `running` by the endpoint, so the client's existing
     polling picks the new data up without any special-casing.
@@ -125,8 +198,14 @@ async def refresh_book_data(
         job_id: The corrected job.
         title: The corrected title.
         author: The corrected author, when given.
-        session_factory: The session factory to open a worker session from.
+        session_factory: The session factory to open a queue worker session from.
         data_fetcher: The fetcher to gather the corrected book's data with.
+        blob_store: Where the job's photo lives. `None` skips the photo
+            lifecycle entirely.
+        previous_book_id: The book the scan was first identified as. Passed
+            in, not read from `job.result`: the endpoint has already reset
+            `book_id` there, which is why reading it here silently never
+            discarded the misidentified entry (a bug since Module 6a).
     """
     async with session_factory() as db:
         job = await db.get(Job, job_id)
@@ -134,7 +213,6 @@ async def refresh_book_data(
             logger.error("job_not_found_in_refresh", job_id=job_id)
             return
 
-        previous_book_id = (job.result or {}).get("book_id")
         book = await _fetch_book_data(db, data_fetcher, job_id, title, author)
 
         # Reset the catalog half unconditionally before repopulating it,
@@ -159,15 +237,33 @@ async def refresh_book_data(
         # so it should not stay in their history — nor teach Module 6
         # anything. Only an untouched scan artifact is discarded; if they
         # rated or noted it in the meantime, it is theirs and it stays.
+        #
+        # The photo moves with the job: it shows the book in the reader's
+        # hands, which the correction says is the *new* book. It leaves the
+        # misidentified entry first (without being deleted — it is about to
+        # be attached to the corrected entry below), then the artifact entry
+        # is discarded.
         new_book_id = book.id if book is not None else None
         if isinstance(previous_book_id, int) and previous_book_id != new_book_id:
-            await _discard_library_artifact(db, job.user_id, previous_book_id, job_id)
+            await _discard_library_artifact(
+                db, job.user_id, previous_book_id, job_id, job.photo_blob, blob_store
+            )
         if book is not None:
-            await _record_in_library(db, job.user_id, book.id, job_id)
+            await _record_in_library(db, job.user_id, book.id, job_id, job.photo_blob, blob_store)
 
 
-async def _record_in_library(db: AsyncSession, user_id: int, book_id: int, job_id: int) -> None:
+async def _record_in_library(
+    db: AsyncSession,
+    user_id: int,
+    book_id: int,
+    job_id: int,
+    photo_blob: str | None = None,
+    blob_store: BlobStore | None = None,
+) -> None:
     """Records the scan in the user's library, swallowing any failure.
+
+    Also hands the scan's photo to the entry; a photo it replaces (the
+    reader's previous photo of the same book) is deleted from storage.
 
     Non-fatal by design, like the metadata fetch above it: the job has
     already completed and been committed, and a history row that failed
@@ -178,16 +274,26 @@ async def _record_in_library(db: AsyncSession, user_id: int, book_id: int, job_i
         user_id: The user who scanned.
         book_id: The book the scan resolved to.
         job_id: The job id, for log correlation.
+        photo_blob: The job's photo, to attach to the entry (if any).
+        blob_store: Where photos live, for deleting a replaced one.
     """
     try:
         await library_service.record_scan(db, user_id, book_id)
+        if photo_blob is not None:
+            replaced = await library_service.attach_photo(db, user_id, book_id, photo_blob)
+            await delete_photo_blob(blob_store, replaced, job_id)
     except Exception:
         logger.exception("library_record_failed", job_id=job_id, book_id=book_id)
         await db.rollback()
 
 
 async def _discard_library_artifact(
-    db: AsyncSession, user_id: int, book_id: int, job_id: int
+    db: AsyncSession,
+    user_id: int,
+    book_id: int,
+    job_id: int,
+    moving_photo: str | None = None,
+    blob_store: BlobStore | None = None,
 ) -> None:
     """Drops the superseded scan's library entry, swallowing any failure.
 
@@ -196,9 +302,20 @@ async def _discard_library_artifact(
         user_id: The user whose library to clean.
         book_id: The previously recognized book.
         job_id: The job id, for log correlation.
+        moving_photo: The job's photo, which is moving to the corrected
+            book's entry: it is detached from the old entry and never
+            deleted here.
+        blob_store: Where photos live. If the discarded entry held some
+            *other* (older) photo, that one is deleted with it.
     """
     try:
-        await library_service.discard_scan_artifact(db, user_id, book_id)
+        entry_photo = await library_service.entry_photo(db, user_id, book_id)
+        if entry_photo is not None and entry_photo == moving_photo:
+            await library_service.detach_photo(db, user_id, book_id, entry_photo)
+            entry_photo = None
+        discarded = await library_service.discard_scan_artifact(db, user_id, book_id)
+        if discarded:
+            await delete_photo_blob(blob_store, entry_photo, job_id)
     except Exception:
         logger.exception("library_artifact_discard_failed", job_id=job_id, book_id=book_id)
         await db.rollback()

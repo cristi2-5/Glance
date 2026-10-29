@@ -21,12 +21,13 @@ from decimal import Decimal
 from typing import Any, TypeVar, cast
 
 import structlog
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Select, case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ResourceNotFound
 from app.models.book import Book
+from app.models.job import Job
 from app.models.journal import JournalEntry
 from app.models.library import LibraryEntry, ReadingStatus
 from app.schemas.library import LibraryEntryUpdate, LibraryPreferences, LibraryStats
@@ -134,14 +135,21 @@ async def discard_scan_artifact(db: AsyncSession, user_id: int, book_id: int) ->
     it. Discarding it would take the journal notes with it, through the
     cascade.
 
+    **Only when this is the entry's one and only scan.** A correction can
+    arrive long after the scan it corrects (the job stays correctable). By
+    then the reader may have scanned the same book again, deliberately: that
+    later scan is legitimate, and deleting the entry would erase it. So with
+    `scan_count > 1` the entry stays and just loses the one scan that was
+    wrong (`scan_count` is decremented), photo included.
+
     Args:
         db: The current database session.
         user_id: The owner of the entry.
         book_id: The previously recognized book.
 
     Returns:
-        `True` if an entry was removed, `False` if there was none or it
-        held user-supplied data.
+        `True` if an entry was removed, `False` if there was none, it held
+        user-supplied data, or it also records other, legitimate scans.
     """
     entry = await _get_entry(db, user_id, book_id)
     if entry is None:
@@ -156,10 +164,135 @@ async def discard_scan_artifact(db: AsyncSession, user_id: int, book_id: int) ->
         logger.info("library_artifact_kept", user_id=user_id, book_id=book_id)
         return False
 
+    if entry.scan_count > 1:
+        entry.scan_count -= 1
+        await db.commit()
+        logger.info("library_artifact_scan_uncounted", user_id=user_id, book_id=book_id)
+        return False
+
+    photo = entry.photo_blob
     await db.delete(entry)
+    if photo is not None:
+        await _forget_photo(db, photo)
     await db.commit()
     logger.info("library_artifact_discarded", user_id=user_id, book_id=book_id)
     return True
+
+
+async def entry_photo(db: AsyncSession, user_id: int, book_id: int) -> str | None:
+    """Returns the blob name of this user's photo of a book, if any.
+
+    Args:
+        db: The current database session.
+        user_id: The owner.
+        book_id: The book.
+
+    Returns:
+        The blob name, or `None` when there is no entry or it has no photo.
+    """
+    entry = await _get_entry(db, user_id, book_id)
+    return entry.photo_blob if entry is not None else None
+
+
+async def attach_photo(db: AsyncSession, user_id: int, book_id: int, photo_blob: str) -> str | None:
+    """Makes `photo_blob` the photo of this user's entry for a book.
+
+    **The photo lifecycle rule.** A library entry owns at most one photo:
+    the latest one the reader took of that book. A job points at its own
+    photo too (the queue worker reads it from there, a correction moves
+    it), but once the entry holds a different one, the old blob has no
+    owner left. So when this *replaces* a pointer, the old name is erased
+    from every job and entry row (`_forget_photo`) and returned, and the
+    caller deletes that blob from storage. Photos are never shared between
+    users: every upload gets its own random blob name.
+
+    Args:
+        db: The current database session.
+        user_id: The owner of the entry.
+        book_id: The book the photo shows.
+        photo_blob: The blob to attach.
+
+    Returns:
+        The name of the replaced blob that must now be deleted from
+        storage, or `None` if nothing was replaced (no entry, no earlier
+        photo, or the entry already pointed at this one).
+    """
+    # Locked (`FOR UPDATE`): two queue workers can attach photos to the same
+    # entry at once. Unlocked, both read the same old pointer, both write
+    # theirs, and one new blob is left with no owner and no cleanup.
+    entry = await _get_entry(db, user_id, book_id, for_update=True)
+    if entry is None or entry.photo_blob == photo_blob:
+        return None
+
+    replaced = entry.photo_blob
+    entry.photo_blob = photo_blob
+    if replaced is not None:
+        await db.flush()
+        await _forget_photo(db, replaced)
+    await db.commit()
+    return replaced
+
+
+async def detach_photo(db: AsyncSession, user_id: int, book_id: int, photo_blob: str) -> None:
+    """Clears this user's entry pointer if it points at `photo_blob`.
+
+    Used by a correction: the photo shows the book the reader actually
+    holds, so it leaves the misidentified book's entry (without deleting the
+    blob, which is about to be attached to the corrected book's entry).
+
+    Args:
+        db: The current database session.
+        user_id: The owner of the entry.
+        book_id: The previously recognised book.
+        photo_blob: The blob that must no longer be on that entry.
+    """
+    entry = await _get_entry(db, user_id, book_id)
+    if entry is not None and entry.photo_blob == photo_blob:
+        entry.photo_blob = None
+        await db.commit()
+
+
+async def photo_is_owned(db: AsyncSession, photo_blob: str) -> bool:
+    """Tells whether any library entry points at this blob.
+
+    The rule that keeps "a pointer never dangles": a blob an entry still
+    owns must not be deleted from storage just because a *job* is being
+    discarded.
+
+    Args:
+        db: The current database session.
+        photo_blob: The blob name.
+
+    Returns:
+        `True` if some entry references it.
+    """
+    owner = await db.scalar(
+        select(LibraryEntry.id).where(LibraryEntry.photo_blob == photo_blob).limit(1)
+    )
+    return owner is not None
+
+
+async def forget_photo(db: AsyncSession, photo_blob: str) -> None:
+    """Erases a blob name from every job and entry, ahead of deleting the blob.
+
+    Args:
+        db: The current database session.
+        photo_blob: The blob about to be deleted from storage.
+    """
+    await _forget_photo(db, photo_blob)
+    await db.commit()
+
+
+async def _forget_photo(db: AsyncSession, photo_blob: str) -> None:
+    """Nulls every pointer to a blob that is about to disappear (no commit).
+
+    A dangling pointer would turn into a 404/500 later; a cleared one is
+    just "no photo".
+    """
+    await db.execute(update(Job).where(Job.photo_blob == photo_blob).values(photo_blob=None))
+    await db.execute(
+        update(LibraryEntry).where(LibraryEntry.photo_blob == photo_blob).values(photo_blob=None)
+    )
 
 
 async def get_entry(db: AsyncSession, user_id: int, book_id: int) -> LibraryEntry:
@@ -292,13 +425,21 @@ async def update_entry(
     return entry
 
 
-async def delete_entry(db: AsyncSession, user_id: int, book_id: int) -> None:
+async def delete_entry(db: AsyncSession, user_id: int, book_id: int) -> str | None:
     """Removes a book from the user's library.
+
+    The entry owns its photo, so the photo goes with it: the pointer is
+    forgotten everywhere in the database here, and the **caller deletes the
+    blob** (storage is not this module's business) from the returned name.
 
     Args:
         db: The current database session.
         user_id: The owner of the entry.
         book_id: The book to remove.
+
+    Returns:
+        The name of the photo blob that is now unreferenced and must be
+        deleted from storage, or `None` if the entry had no photo.
 
     Raises:
         ResourceNotFound: If this user has no entry for this book. Note
@@ -309,9 +450,13 @@ async def delete_entry(db: AsyncSession, user_id: int, book_id: int) -> None:
     if entry is None:
         raise ResourceNotFound("This book is not in your library.")
 
+    photo = entry.photo_blob
     await db.delete(entry)
+    if photo is not None:
+        await _forget_photo(db, photo)
     await db.commit()
     logger.info("library_entry_deleted", user_id=user_id, book_id=book_id)
+    return photo
 
 
 async def list_entries(
@@ -514,18 +659,24 @@ def _owned(statement: StatementT, user_id: int) -> StatementT:
     return statement.where(LibraryEntry.user_id == user_id)
 
 
-async def _get_entry(db: AsyncSession, user_id: int, book_id: int) -> LibraryEntry | None:
+async def _get_entry(
+    db: AsyncSession, user_id: int, book_id: int, *, for_update: bool = False
+) -> LibraryEntry | None:
     """Returns this user's entry for a book, or `None`.
 
     Args:
         db: The current database session.
         user_id: The owner.
         book_id: The book.
+        for_update: Lock the row until the transaction ends and re-read its
+            current values (`populate_existing`), for read-modify-write.
 
     Returns:
         The entry, or `None` when this user has none for this book.
     """
     statement = _owned(select(LibraryEntry), user_id).where(LibraryEntry.book_id == book_id)
+    if for_update:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     entry: LibraryEntry | None = await db.scalar(statement)
     return entry
 

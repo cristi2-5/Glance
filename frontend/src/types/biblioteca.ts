@@ -40,6 +40,11 @@ export interface LibraryEntry {
    * does not need every word anyone wrote about any of them.
    */
   journal_count: number
+  /**
+   * Whether the reader's own photo of this book can be fetched from
+   * `GET /books/{id}/library/photo` (owner only; the blob itself is private).
+   */
+  has_photo: boolean
   scan_count: number
   /** ISO 8601, or `null` for an entry never created by a scan. */
   first_scanned_at: string | null

@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.db.init_db import init_db
+from app.services.storage import close_storage
 
 settings = get_settings()
 configure_logging(debug=settings.debug)
@@ -21,6 +22,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Refuses to start on a database that is behind the migrations."""
     await init_db()
     yield
+    # Close the Blob/Queue HTTP sessions (created lazily on first use).
+    await close_storage()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

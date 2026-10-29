@@ -6,11 +6,21 @@
  * matched an edition with no thumbnail — we show the title's initial on a
  * warm background rather than an empty gray box, which reads as a broken
  * image rather than a deliberate absence.
+ *
+ * The fallback chain is catalog cover → **the reader's own photo** (when the
+ * library entry has one) → the initial. A book the catalogs never heard of
+ * still shows the thing the reader actually photographed.
+ *
+ * A source that fails to load (an expired token on the photo request, a 404
+ * for a cover URL the catalog has since dropped) drops to the next link of
+ * the chain instead of leaving an empty box.
  */
 
 import { Image } from 'expo-image'
+import { useEffect, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
+import { type PhotoRef, useLibraryPhoto } from '@/features/library/photo'
 import { colors, radius, typography } from '@/theme'
 
 /** `list` sits inside a row of cards; `hero` heads the scan result screen. */
@@ -22,17 +32,40 @@ interface BookCoverProps {
   /** Used for the fallback initial and the accessibility label. */
   title: string
   size?: CoverSize
+  /** The reader's own photo, shown only when there is no catalog cover. */
+  photoOf?: PhotoRef | null
 }
 
-export function BookCover({ url, title, size = 'list' }: BookCoverProps) {
+export function BookCover({ url, title, size = 'list', photoOf = null }: BookCoverProps) {
   const sizeStyle = size === 'hero' ? styles.hero : styles.list
+  const photo = useLibraryPhoto(url ? null : photoOf)
+  const [coverFailed, setCoverFailed] = useState(false)
+  const [photoFailed, setPhotoFailed] = useState(false)
 
-  if (url) {
+  // A new URL or photo gets its own chance to load.
+  useEffect(() => setCoverFailed(false), [url])
+  useEffect(() => setPhotoFailed(false), [photo?.uri])
+
+  if (url && !coverFailed) {
     return (
       <Image
         accessibilityLabel={`Cover of ${title}`}
         contentFit="cover"
+        onError={() => setCoverFailed(true)}
         source={{ uri: url }}
+        style={[styles.base, sizeStyle]}
+        transition={200}
+      />
+    )
+  }
+
+  if (photo && !photoFailed) {
+    return (
+      <Image
+        accessibilityLabel={`Your photo of ${title}`}
+        contentFit="cover"
+        onError={() => setPhotoFailed(true)}
+        source={photo}
         style={[styles.base, sizeStyle]}
         transition={200}
       />

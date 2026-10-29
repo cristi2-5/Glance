@@ -150,6 +150,9 @@ export default function ProfileScreen() {
                 onPress={() => {
                   router.push(`/book/${entry.book.id}`)
                 }}
+                photoOf={
+                  entry.has_photo ? { bookId: entry.book.id, version: entry.updated_at } : null
+                }
               />
             ))}
           </View>

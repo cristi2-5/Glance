@@ -24,6 +24,13 @@ def configure_logging(debug: bool = False) -> None:
         level=log_level,
     )
 
+    # The Azure SDK logs every HTTP request and response, headers included,
+    # at INFO. The queue worker polls the queue every 1-10 s, so an *idle*
+    # worker wrote ~190 lines a minute — noise locally, and in Azure every
+    # line is billed Log Analytics ingestion. Its warnings and errors still
+    # come through; our own `storage.py` logs the events that matter.
+    logging.getLogger("azure").setLevel(logging.WARNING)
+
     # `format_exc_info` turns the `exc_info=True` that `logger.exception()`
     # sets into a rendered traceback string. Without it `JSONRenderer`
     # serializes the flag literally — `"exc_info": true` — and the actual

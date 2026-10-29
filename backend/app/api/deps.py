@@ -17,12 +17,15 @@ from app.services.recommendation_service import (
     RecommendationService,
     build_recommendation_service,
 )
+from app.services.storage import BlobStore, JobQueue, get_blob_store, get_job_queue
 from app.services.vision_service import VisionService, build_vision_service
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
+BlobStoreDep = Annotated[BlobStore, Depends(get_blob_store)]
+JobQueueDep = Annotated[JobQueue, Depends(get_job_queue)]
 VisionServiceDep = Annotated[VisionService, Depends(build_vision_service)]
 DataFetcherDep = Annotated[BookDataFetcher, Depends(build_data_fetcher)]
 RagServiceDep = Annotated[RagService, Depends(build_rag_service)]

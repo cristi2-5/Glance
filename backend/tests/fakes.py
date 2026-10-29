@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.exceptions import BlobNotFound, StorageUnavailable
 from app.models.book import SourceName
 from app.models.vector import EMBEDDING_DIMENSIONS
 from app.services.ocr_service import OcrEngine, TextCandidate
@@ -18,6 +19,7 @@ from app.services.sources.base import (
     DiscoveryResult,
     SourceResult,
 )
+from app.services.storage import JobMessage, QueuedMessage
 from app.services.title_lookup import BookCandidate, LookupOutcome, TitleLookup
 
 
@@ -263,3 +265,105 @@ class ScriptedSummaryClient(OllamaClient):
             )
         )
         return self._responder(prompt)
+
+
+class InMemoryBlobStore:
+    """In-memory `BlobStore`; `fail` makes every call raise `StorageUnavailable`."""
+
+    def __init__(self) -> None:
+        self.blobs: dict[str, bytes] = {}
+        self.fail = False
+        self.fail_delete = False
+
+    async def put(self, name: str, data: bytes, content_type: str = "image/jpeg") -> None:
+        if self.fail:
+            raise StorageUnavailable("Blob storage is unavailable.")
+        self.blobs[name] = data
+
+    async def get(self, name: str) -> bytes:
+        if self.fail:
+            raise StorageUnavailable("Blob storage is unavailable.")
+        if name not in self.blobs:
+            raise BlobNotFound("The stored photo no longer exists.")
+        return self.blobs[name]
+
+    async def delete(self, name: str) -> None:
+        if self.fail or self.fail_delete:
+            raise StorageUnavailable("Blob storage is unavailable.")
+        self.blobs.pop(name, None)
+
+
+class InMemoryJobQueue:
+    """In-memory `JobQueue` with the delivery semantics the queue worker relies on.
+
+    A received message turns invisible until deleted; `expire_visibility`
+    stands in for the visibility timeout elapsing, making every received but
+    undeleted message deliverable again with a higher `dequeue_count`. (The
+    real behaviour is proven against Azurite in `test_storage.py`.)
+    """
+
+    def __init__(self) -> None:
+        self.fail_send = False
+        self.fail_receive = False
+        self.fail_extend = False
+        #: Every (message_id, visibility_timeout) passed to `extend`.
+        self.extended: list[tuple[str, int]] = []
+        #: Receipt currently valid per message id; a stale one deletes nothing.
+        self._receipts: dict[str, str] = {}
+        self._next_id = 1
+        # id -> [body, dequeue_count, invisible]
+        self._messages: dict[str, list[Any]] = {}
+        self.deleted: list[str] = []
+
+    @property
+    def bodies(self) -> list[str]:
+        """The bodies of every message still on the queue."""
+        return [entry[0] for entry in self._messages.values()]
+
+    async def send(self, message: JobMessage) -> None:
+        if self.fail_send:
+            raise StorageUnavailable("Queue storage is unavailable.")
+        self.send_raw(message.model_dump_json(exclude_none=True))
+
+    def send_raw(self, body: str) -> None:
+        """Puts arbitrary text on the queue (for malformed-message tests)."""
+        self._messages[str(self._next_id)] = [body, 0, False]
+        self._next_id += 1
+
+    async def receive(self, visibility_timeout: int) -> QueuedMessage | None:
+        if self.fail_receive:
+            raise StorageUnavailable("Queue storage is unavailable.")
+        for message_id, entry in self._messages.items():
+            if not entry[2]:
+                entry[1] += 1
+                entry[2] = True
+                self._receipts[message_id] = f"receipt-{entry[1]}"
+                return QueuedMessage(
+                    message_id=message_id,
+                    pop_receipt=f"receipt-{entry[1]}",
+                    body=entry[0],
+                    dequeue_count=entry[1],
+                )
+        return None
+
+    async def extend(self, message: QueuedMessage, visibility_timeout: int) -> str:
+        if self.fail_extend:
+            raise StorageUnavailable("Queue storage is unavailable.")
+        if self._receipts.get(message.message_id) != message.pop_receipt:
+            raise StorageUnavailable("stale receipt")
+        self.extended.append((message.message_id, visibility_timeout))
+        receipt = f"{message.pop_receipt}+"
+        self._receipts[message.message_id] = receipt
+        return receipt
+
+    async def delete(self, message: QueuedMessage) -> None:
+        # Like Azure: a stale receipt deletes nothing.
+        if self._receipts.get(message.message_id) != message.pop_receipt:
+            return
+        self._messages.pop(message.message_id, None)
+        self.deleted.append(message.message_id)
+
+    def expire_visibility(self) -> None:
+        """Makes every received-but-undeleted message deliverable again."""
+        for entry in self._messages.values():
+            entry[2] = False

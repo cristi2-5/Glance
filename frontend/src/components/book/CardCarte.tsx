@@ -6,6 +6,7 @@
 import { StyleSheet, Text, View } from 'react-native'
 
 import { Card } from '@/components/ui/Card'
+import type { PhotoRef } from '@/features/library/photo'
 import { colors, spacing, typography } from '@/theme'
 import type { LibraryBook } from '@/types/biblioteca'
 
@@ -17,13 +18,15 @@ interface BookCardProps {
   /** Extra row under the metadata — a recommendation's explanation, for example. */
   footer?: string
   onPress?: () => void
+  /** The reader's own photo, used as the cover when the catalog has none. */
+  photoOf?: PhotoRef | null
 }
 
-export function BookCard({ book, footer, onPress }: BookCardProps) {
+export function BookCard({ book, footer, onPress, photoOf = null }: BookCardProps) {
   return (
     <Card {...(onPress ? { onPress } : {})} style={styles.card}>
       <View style={styles.row}>
-        <BookCover title={book.title} url={book.cover_url} />
+        <BookCover photoOf={photoOf} title={book.title} url={book.cover_url} />
 
         <View style={styles.details}>
           <Text numberOfLines={2} style={styles.title}>

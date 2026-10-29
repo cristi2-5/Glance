@@ -28,6 +28,12 @@ class Job(Base):
         status: The current state (`pending` → `running` → `done`/`failed`).
         result: The job result, as JSON, available when `status == done`.
         error: The error message, available when `status == failed`.
+        photo_blob: Name of the scan's normalised photo in Blob Storage, or
+            `None` once it was deleted (a failed scan) or released (the
+            photo it pointed to was replaced or its library entry removed).
+            The queue worker reads the image from here; a `done` job keeps
+            the pointer so a correction can move the photo to the corrected
+            book's entry.
         created_at: The moment the job was created.
         updated_at: The moment of the last state change.
     """
@@ -39,6 +45,7 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(20), default=JobStatus.PENDING.value, nullable=False)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_blob: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False

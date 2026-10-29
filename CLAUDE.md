@@ -4,9 +4,9 @@ This file is automatically loaded by Claude Code at every session. Don't repeat 
 
 ## Overview
 
-**Glance** — mobile app + hybrid backend (local storage/embeddings, cloud AI inference). You photograph a book cover, and the app recognizes the title and author, gathers material about the book from open sources, generates a summary via RAG, and offers personalized recommendations based on reading history.
+**Glance** — mobile app + hybrid backend (our own storage and embeddings, cloud AI inference). You photograph a book cover, and the app recognizes the title and author, gathers material about the book from open sources, generates a summary via RAG, and offers personalized recommendations based on reading history.
 
-**Storage is ours: one PostgreSQL we run ourselves (compose locally, Azure Flexible Server in the cloud) holds the relational data *and* the vectors (pgvector), and embeddings come from our own Ollama (`nomic-embed-text`) — no third-party data services.** Vision (cover recognition) and LLM generation (RAG summaries) run on **Groq Cloud**, adopted after the locally-sized models proved insufficient. See "Architecture pivot: local vision/LLM → Groq Cloud" below and the "Strict rules" section for the current, precise boundary.
+**Storage is ours: one PostgreSQL we run ourselves (compose locally, Azure Flexible Server in the cloud) holds the relational data *and* the vectors (pgvector); scan photos and the job queue live in Blob/Queue Storage (Azurite locally, an Azure Storage account in the cloud); embeddings come from our own Ollama container (`nomic-embed-text`) — no third-party data services.** Vision (cover recognition) and LLM generation (RAG summaries) run on **Groq Cloud**, adopted after the locally-sized models proved insufficient. See "Architecture pivot: local vision/LLM → Groq Cloud" below and the "Strict rules" section for the current, precise boundary.
 
 ## Hardware constraints (decisive for design)
 
@@ -15,7 +15,7 @@ Development laptop: **7.4 GB total RAM**, CPU-only, Windows 11, Python 3.11.9, O
 Non-negotiable consequences:
 
 1. **Never load two Ollama models simultaneously.** Set `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_KEEP_ALIVE=5m`. Reloading costs 2-4 s; swapping would cost minutes.
-2. **The full pipeline takes 30-120 s.** So heavy endpoints are **asynchronous**: they return `202 Accepted` + `job_id`, and the client polls `GET /jobs/{id}`. No Celery/Redis — just `BackgroundTasks` and a `jobs` table in the database.
+2. **The full pipeline takes 30-120 s.** So heavy endpoints are **asynchronous**: they return `202 Accepted` + `job_id`, and the client polls `GET /jobs/{id}`. No Celery/Redis — the api stores the photo in Blob Storage and enqueues a message on Queue Storage, a separate **queue worker** container runs the pipeline, and a `jobs` table in the database holds the state (see "Blob + queue + queue worker" below).
 3. **We avoid PyTorch.** ~2.5 GB of disk install and hundreds of MB of RAM for something Ollama already does. Embeddings via `nomic-embed-text`, OCR via ONNX Runtime.
 
 ## Architecture
@@ -27,10 +27,15 @@ Client (mobile app)
       │  GET  /books/{book_id}/summary              →  cited RAG summary, on demand
       │  PUT  /books/{book_id}/library              →  reading status, rating
       │  GET/POST /books/{book_id}/journal          →  dated reading notes
+      │  GET  /books/{book_id}/library/photo        →  your own photo of the book (owner only)
       │  GET  /users/me/library|stats|preferences   →  history, counters, derived tastes
       │  GET  /users/me/recommendations             →  ranked suggestions + why
       ▼
-FastAPI backend (local, on laptop)
+FastAPI backend (api container)
+      │  photo -> Blob Storage (private `scans`), {kind, job_id} -> Queue `cover-jobs`
+      │  (Azurite locally, Azure Storage in the cloud)
+      ▼
+Queue worker (same image, `python -m app.workers.queue_worker`) runs the pipeline:
       │
       ├── qwen/qwen3.8-27b (via Groq)  → title/author from the cover, runs first    [cloud, seconds]
       ├── RapidOCR (ONNX)              → fallback when Groq's guess is unconfirmed  [fast, <1 s]
@@ -188,7 +193,7 @@ the answer for anything else. It now is: see the next decision.
 
 **`app/` is copied once, into `/app`, and never `pip install`ed.** An installed second copy in site-packages would win whenever the process starts outside `/app`, moving `BACKEND_DIR` and with it the paths the app derives from it. Compose sets `DATABASE_URL` explicitly for the same reason.
 
-**`api` runs exactly one uvicorn worker, and that is temporary.** FastAPI `BackgroundTasks` still ties the scan jobs to the process, so a second worker would be a second job runner with its own in-flight tasks. (Vectors are no longer a reason: since step 3 they live in Postgres.) The limit is lifted when jobs move to a queue/worker (step 4), not before.
+**The one-uvicorn-worker rule is lifted (step 4).** Vectors live in Postgres (step 3) and scans run in the queue worker container fed by Queue Storage, so nothing that matters lives in the api process. The Dockerfile no longer passes `--workers`; uvicorn defaults to 1 and honours `WEB_CONCURRENCY`. In Azure the scaling unit is replicas. The `worker` compose service runs the same image with `python -m app.workers.queue_worker` and no ports; `azurite` (pinned tag) emulates Blob + Queue, volume `azurite-data`, ports bound to 127.0.0.1 for host-side pytest.
 
 **`nomic-embed-text` is baked into the `ollama` image at build time, pinned to `v1.5`.** Containers are restarted freely in the cloud; if the model were pulled on first start, every fresh container would spend its first minutes downloading ~275 MB while `api` waited on it. It is pinned because a moved `latest` tag would make new vectors stop matching the ones already stored; the build aliases `v1.5` to `nomic-embed-text:latest` so `Settings.ollama_embedding_model` needs no change. The pull runs under `set -e` and the build asserts the model exists, so a network blip fails the build instead of shipping an image with no model.
 
@@ -211,6 +216,36 @@ the answer for anything else. It now is: see the next decision.
 **Hazard (resolved in step 3): book ids vs the old vector store.** A fresh Postgres restarts ids at 1 while the file-based Chroma store still held chunks for the *old* book 1, 2, 3, so the new book 1 retrieved the old book 1's passages, and the `CorpusLeak` re-check could not catch it because the id matched. Since step 3 chunks are rows in the same database with a foreign key to `books`, so the hazard is gone structurally.
 
 **SQLite support ended in step 3.** pgvector has no SQLite equivalent, and the isolation tests must run against the real store, so Postgres is required everywhere, including `pytest`: `docker compose up -d postgres` first. `aiosqlite` is no longer a dependency, and `Settings.database_url` defaults to the compose dev database (`postgresql+asyncpg://glance:glance@127.0.0.1:5433/glance`). The suite fails at once, with that instruction, if the database is unreachable — it never skips. The schema is built once per session and every test starts with `TRUNCATE ... RESTART IDENTITY CASCADE`; `tests/test_migrations.py` uses a throwaway database per test so it can start from an unmigrated one.
+
+### Blob + queue + queue worker (cloud step 4)
+
+**What changed:** `POST /books/analyze-cover` no longer runs the pipeline in the api process. The api normalises the photo (`preprocess_cover`: EXIF rotation, 768 px, JPEG), stores it in a **private Blob container** (`scans/{uuid4}.jpg`), puts a message on **Queue Storage** (`cover-jobs`) and answers 202. A separate **queue worker** container (same image, command `python -m app.workers.queue_worker`, no ports) takes the message and runs the unchanged `process_cover` / `refresh_book_data`. `PATCH /jobs/{id}/correction` does the same with a `refresh` message. The client is unchanged (202 + polling). Locally both storage services are **Azurite**, Microsoft's official emulator, driven by the real Azure SDK; only `AZURE_STORAGE_CONNECTION_STRING` changes in Azure (managed identity, step 5).
+
+**Why:** with `BackgroundTasks` the photo lived in the api's RAM, so a restart or scale-in mid-scan lost it and left the job `running` forever, the heavy work could not leave the api, and it was the last reason for the single uvicorn worker. (Terminology: "queue worker" is this container; "uvicorn worker" is a web-server process.)
+
+**Messages carry ids only** (`{"kind": "scan"|"refresh", "job_id": 7}`, validated with pydantic on receive). The photo's blob name is on the job row and a correction's title/author are already in `job.result`; nothing about the user or the book travels through the queue.
+
+**The job is committed before it is enqueued.** Order: commit the `pending` job, upload the photo, enqueue. A fast queue worker must never dequeue a message for a job that is not in the database yet, and a message only ever points at a photo that exists. If the upload or the enqueue fails, the job is marked `failed`, the photo removed, and the api answers 503. A failed enqueue on a correction puts the job back to `done` so the PATCH can be retried.
+
+**Delivery is at-least-once, so handling is idempotent.** A message is deleted only when its job reached a final state; if the queue worker dies, the message reappears after `job_visibility_timeout_seconds` (300, longer than the pipeline). Job `done`/`failed` on delivery means a duplicate (message deleted, nothing re-run); `running` means a previous queue worker died, so it runs again (the book fetch is cached, the library write is unique per user and book); a missing job is logged and dropped. Unexpected exceptions leave the message on the queue.
+
+`running` is ambiguous on purpose, so the scan check is more than a status check: it means "a scan is in progress or was interrupted" *or* "a correction is waiting for its refresh". A correction leaves the job `running` **with a `result`**, and a scan run writes `result` only when it reaches `done` — so a SCAN message for a job that already has a `result` is treated as settled (otherwise a late redelivery would re-run the scan over the reader's corrected title). A REFRESH message expects `running`. The `refresh` message also carries `previous_book_id` (the misidentified book): the correction endpoint resets `book_id` in `job.result` before queueing, so the message is the only place it survives, and without it the untouched library entry of the wrong book was never discarded.
+
+**Long jobs keep their message (heartbeat).** While a message is handled, a heartbeat task calls `JobQueue.extend` every half visibility timeout, so a slow job is not handed to a second queue worker. Azure issues a **new pop receipt on every update**, so the final delete uses the newest one (`_Lease` in `queue_worker.py`). A failed extension is logged, not fatal. On SIGTERM the queue worker finishes the message in hand; that needs the platform to wait: compose `stop_grace_period: 150s` (set on the `worker` service) and, in step 7, the Container App's termination grace period (`terminationGracePeriodSeconds`, max 600) must be at least the worst-case job. If it is killed anyway nothing is lost: the message reappears once the last extension runs out.
+
+**Accepted gaps (known, deliberately not closed).** (1) The api dying between committing the `pending` job and sending its message leaves a `pending` job nothing will pick up; the client's polling just never sees it finish. A sweeper for old `pending` jobs would close it, and was judged not worth it yet. (2) Jobs left `running` by the old `BackgroundTasks` era (before this step) have no message and never finish. (3) A crash between the `done` commit and `_record_in_library` loses that scan's library entry (the job is `done`, so the redelivered message is a duplicate and does not re-run it); the reader can rescan. All three trade a rare, visible, recoverable loss for not needing a transactional outbox.
+
+**A correction of an old scan only uncounts that scan.** `discard_scan_artifact` removes the misidentified entry only when `scan_count == 1`; with more, the reader scanned the book again on purpose, so the entry and its photo stay and `scan_count` drops by one. `attach_photo` locks the entry (`SELECT ... FOR UPDATE`) so two queue workers cannot lose each other's photo pointer. Failing a job never deletes a photo a library entry still points at (`fail_job` checks), so a pointer never dangles.
+
+**Poison messages.** One that does not parse, or has `dequeue_count > job_max_attempts` (3), is dropped: the job fails with "This scan could not be processed. Please try again." and `job_poisoned` is logged. A pipeline *outcome* (unreadable cover) already ends `failed` on the first delivery and is not retried. A poisoned refresh keeps its photo (the library entry owns it).
+
+**Photo lifecycle (one rule).** A library entry owns at most one photo, the latest of that book; the job also points at it (the queue worker reads it from there, a correction moves it). A `failed` job deletes its photo. On `done`, `attach_photo` points the entry at the job's photo; if that *replaces* an older photo, the old name is erased from every job/entry row and the blob deleted. Removing the library entry deletes its photo. A correction moves the photo to the corrected book's entry (detached from the misidentified one first, so it is never deleted by accident; a discarded artifact entry's other, older photo is deleted). Blob deletion is best-effort and always after the database commit: the worst case is an orphaned ~50 KB file, never a dangling pointer. A scan that resolved no book keeps its photo on the job so a later correction can attach it.
+
+**Photos are served only by the api, never by URL.** The container is private, with no public or SAS links (**it must stay private in Azure**). `GET /books/{book_id}/library/photo` resolves the blob through the user's library entry (same ownership rule as the journal: another reader's entry simply does not match, 404), `Cache-Control: private`. Schemas expose only `has_photo`. The client falls back catalog cover -> your photo -> initial, and shows a "Your photo" thumbnail on the book screen.
+
+**Azurite is required by the test suite**, like Postgres: the adapter tests run against the real emulator (a fake would only restate the queue semantics the design depends on), and conftest fails the session, never skips, if it is down.
+
+**Step 7 note:** scale the queue worker with a KEDA `azure-queue` scale rule (min replicas 0); the visibility timeout must stay above the longest scan (the heartbeat covers overruns). Set the Container App's termination grace period (`terminationGracePeriodSeconds`, max 600) to at least the worst-case job: the default 30 s is shorter than the 30-120 s pipeline, so a scale-in would otherwise kill the queue worker mid-scan.
 
 ### Dual-purpose embeddings
 
@@ -295,7 +330,8 @@ backend/
 │   │   ├── journal_service.py      # dated reading notes, owned via the library entry
 │   │   └── recommendation_service.py  # profile vector, catalog discovery, ranking, explanations
 │   ├── workers/
-│   │   └── cover_pipeline.py       # the full job: OCR → fetch → ingest → summary
+│   │   ├── cover_pipeline.py       # the full job: OCR → fetch → ingest → summary; photo lifecycle
+│   │   └── queue_worker.py         # the queue worker: queue -> pipeline, idempotent, poison handling
 │   └── db/
 │       ├── session.py
 │       └── init_db.py              # startup check: DB at Alembic head, else refuse to start
@@ -307,7 +343,7 @@ backend/
 ├── docs/
 │   └── module-N-name.md            # summary written at the end of each module
 ├── .env.example
-├── Dockerfile                      # the `api` image (multi-stage, non-root, one uvicorn worker, `test` stage)
+├── Dockerfile                      # the `api` + queue worker image (multi-stage, non-root, `test` stage)
 ├── requirements.lock               # exact runtime versions the image installs (regenerate: see its header)
 ├── .dockerignore                   # keeps .env, .venv, docs/ out of the build context
 ├── pyproject.toml
@@ -401,7 +437,8 @@ alembic revision --autogenerate -m "..."   # new migration after a model change;
                                    # tests use the `glance_test` database (TEST_DATABASE_URL overrides);
                                    # it is created only on a fresh volume, else `createdb` it;
                                    # 127.0.0.1, not localhost: on Windows localhost tries ::1 first, +2 s per connection
-docker compose up --build          # (repo root) run postgres, migrate, api, ollama; needs backend/.env
+docker compose up -d postgres azurite   # (repo root) required before `pytest`
+docker compose up --build          # (repo root) run postgres, azurite, migrate, api, worker (queue worker), ollama; needs backend/.env
 docker compose --profile test run --rm test
                                    # (repo root) the suite inside Linux, on the locked versions
 ```
@@ -421,7 +458,7 @@ docker compose --profile test run --rm test
 
 The project is **hybrid**: storage and embeddings stay ours; vision and LLM generation default to Groq Cloud. This is a deliberate pivot from the original all-local design — see "Architecture pivot: local vision/LLM → Groq Cloud" above for the reasoning (local model accuracy on this hardware was not good enough, and CPU inference was too slow).
 
-- **Storage, cache, vectors and embeddings stay under our control** — one Postgres we run (compose locally / Flexible Server in Azure) with the pgvector extension holding both the relational data and the vectors, and `nomic-embed-text` via our own Ollama. No third-party data services, regardless of `ai_provider`.
+- **Storage, cache, vectors and embeddings stay under our control** — one Postgres we run (compose locally / Flexible Server in Azure) with the pgvector extension holding both the relational data and the vectors, scan photos and the job queue in Blob/Queue Storage (Azurite locally / an Azure Storage account in the cloud), and `nomic-embed-text` via our own Ollama container. No third-party data services, regardless of `ai_provider`.
 - **Vision and LLM generation go through Groq Cloud by default** (`Settings.ai_provider = "groq"`), using `groq.AsyncGroq` with the key in `GROQ_API_KEY`. The local path (`ai_provider = "ollama"`, Moondream + Llama 3.2) must keep working as a fallback — don't let it bit-rot or get deleted.
 - **Never hardcode the provider.** Both integrations go through `Settings.ai_provider` / `Settings.vision_model` / `Settings.llm_model` in `core/config.py`, never a direct `if` on a model name scattered through the code.
 - No other cloud LLM/vision APIs (OpenAI, Anthropic API, etc.) and no Google Colab — Groq is the one deliberate exception, not a general opening.

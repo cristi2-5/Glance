@@ -32,7 +32,7 @@ If they don't — or the model fails — an on-device OCR pass reads the printed
 
 One detail worth knowing, because it produces visibly wrong results otherwise: **the author is the name on the cover, not the catalog's contributor list.** Google Books returns translators, illustrators and editors mixed in unlabelled, which for one Romanian edition of Jules Verne meant four names where the book credits one. When the scanned name appears in that list, it wins — the cover is the better authority, and the camera already read it.
 
-Because the whole pipeline takes half a minute or more, a scan doesn't block. It returns a job id immediately and the app polls until it's done.
+Because the whole pipeline takes half a minute or more, a scan doesn't block. It returns a job id immediately and the app polls until it's done. Behind the scenes the API stores your (normalised) photo in a private blob store and puts a small message on a queue; a separate queue worker picks it up and does the slow part, so a restart can't lose a scan. Your photo is kept as the cover of any book the catalogs have no picture for, and is shown on the book screen as "Your photo" (only you can see it; removing the book from your library deletes it).
 
 ### The summary, and why every sentence has a source
 
@@ -110,7 +110,7 @@ uvicorn app.main:app --reload --host 0.0.0.0
 
 `--host 0.0.0.0` matters — without it the server only listens on localhost and your phone can't reach it.
 
-The backend needs PostgreSQL with pgvector even when you run it natively: start just the database container first, from the repo root, with `docker compose up -d postgres` (the default `DATABASE_URL` points at it). The same container serves the tests: `pytest` fails immediately, with that instruction, if it is not running.
+The backend needs PostgreSQL with pgvector even when you run it natively: start just the database and the storage emulator first, from the repo root, with `docker compose up -d postgres azurite` (the default `DATABASE_URL` points at it). The API only queues scans, so also run the queue worker from `backend/` with `python -m app.workers.queue_worker`. The same container serves the tests: `pytest` fails immediately, with that instruction, if either is not running.
 
 **With Docker (instead of the venv + a local Ollama):**
 
@@ -119,7 +119,7 @@ cp backend/.env.example backend/.env   # fill in JWT_SECRET_KEY and GROQ_API_KEY
 docker compose up --build
 ```
 
-This starts PostgreSQL, a one-shot `migrate` container that creates the tables, the API, and an Ollama container with `nomic-embed-text` already baked in. On a machine with little RAM, quit the native Ollama app first — the container has its own copy of the model. Your phone reaches the backend at `http://<laptop-ip>:8000`. If you ran an earlier version of the app (which kept its data in SQLite and its vectors in a local ChromaDB folder), the new setup starts with a fresh database and ignores the old files. With `AI_PROVIDER=ollama`, pull the local models into the container first: `docker compose exec ollama ollama pull moondream` and `docker compose exec ollama ollama pull llama3.2`.
+This starts PostgreSQL, Azurite (the Azure Storage emulator, for scan photos and the job queue), a one-shot `migrate` container that creates the tables, the API, a queue worker container that runs the scans, and an Ollama container with `nomic-embed-text` already baked in. On a machine with little RAM, quit the native Ollama app first — the container has its own copy of the model. Your phone reaches the backend at `http://<laptop-ip>:8000`. If you ran an earlier version of the app (which kept its data in SQLite and its vectors in a local ChromaDB folder), the new setup starts with a fresh database and ignores the old files. With `AI_PROVIDER=ollama`, pull the local models into the container first: `docker compose exec ollama ollama pull moondream` and `docker compose exec ollama ollama pull llama3.2`.
 
 **App:**
 

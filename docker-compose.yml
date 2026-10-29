@@ -28,6 +28,44 @@ services:
       retries: 10
     restart: unless-stopped
 
+  azurite:
+    # Microsoft's official Azure Storage emulator: the real Blob and Queue APIs,
+    # so the code uses the real Azure SDK and only the connection string changes
+    # in Azure. Pinned, because a moved tag changes the emulated API surface.
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    # Blob + queue only (no table service). 0.0.0.0 so other containers reach it
+    # by service name; --skipApiVersionCheck because the Azure SDK always sends
+    # its newest API version, which an emulator release can lag behind; --loose
+    # tolerates request headers the emulator does not model.
+    command:
+      - azurite
+      - --blobHost
+      - 0.0.0.0
+      - --queueHost
+      - 0.0.0.0
+      - --location
+      - /data
+      - --skipApiVersionCheck
+      - --loose
+    ports:
+      # Host-side pytest only (the default connection string in config.py).
+      # Localhost-bound: the emulator's account key is public knowledge.
+      - "127.0.0.1:10000:10000"
+      - "127.0.0.1:10001:10001"
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      # The image ships node, not curl: a TCP connect to both listeners.
+      test:
+        - CMD
+        - node
+        - -e
+        - "const n=require('net');let d=0;for(const p of [10000,10001]){const c=n.connect(p,'127.0.0.1',()=>{c.end();if(++d===2)process.exit(0)});c.on('error',()=>process.exit(1))}"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   migrate:
     # One-shot: applies the schema, then exits. Not done at api startup because
     # several api replicas would race each other; in Azure this becomes a
@@ -55,12 +93,49 @@ services:
       # Inside the compose network, services are reached by name.
       OLLAMA_HOST: http://ollama:11434
       DATABASE_URL: postgresql+asyncpg://glance:glance@postgres:5432/glance
+      # Azurite's well-known public development account, addressed by its
+      # in-network hostname. Azure Storage (managed identity) replaces it in step 5.
+      AZURE_STORAGE_CONNECTION_STRING: &azurite-connection >-
+        DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;
     ports:
       - "8000:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
       ollama:
+        condition: service_healthy
+      azurite:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    # The queue worker: takes scan/refresh messages off the queue and runs the
+    # pipeline (vision, catalogs, embeddings). Same image as api, different
+    # command; no ports, nothing calls it. Scale it independently of the api
+    # (`docker compose up -d --scale worker=2`): every message is processed by
+    # exactly one replica at a time.
+    image: glance-backend
+    pull_policy: never
+    env_file: backend/.env
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      DATABASE_URL: postgresql+asyncpg://glance:glance@postgres:5432/glance
+      AZURE_STORAGE_CONNECTION_STRING: *azurite-connection
+    command: ["python", "-m", "app.workers.queue_worker"]
+    # On `stop` the queue worker finishes the message in hand before exiting,
+    # and a scan takes 30-120 s; compose's default 10 s would SIGKILL it
+    # mid-job (the message would reappear, but the work is wasted).
+    stop_grace_period: 150s
+    # The image's HEALTHCHECK probes the api's HTTP /health, which the queue
+    # worker never serves, so it would be reported unhealthy forever.
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_healthy
+      azurite:
         condition: service_healthy
     restart: unless-stopped
 
@@ -76,8 +151,11 @@ services:
       target: test
     environment:
       TEST_DATABASE_URL: postgresql+asyncpg://glance:glance@postgres:5432/glance_test
+      AZURE_STORAGE_CONNECTION_STRING: *azurite-connection
     depends_on:
       postgres:
+        condition: service_healthy
+      azurite:
         condition: service_healthy
 
   ollama:
@@ -94,3 +172,4 @@ services:
 
 volumes:
   glance-pg:
+  azurite-data:

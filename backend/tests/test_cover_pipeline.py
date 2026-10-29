@@ -337,8 +337,17 @@ async def test_correction_moves_the_history_to_the_corrected_book(
         ],
         settings=get_settings(),
     )
+    async with db_session_factory() as db:
+        scanned = await db.get(Job, job_id)
+        assert scanned is not None and scanned.result is not None
+        previous = scanned.result["book_id"]
     await refresh_book_data(
-        job_id, "Baltagul", "Mihail Sadoveanu", db_session_factory, corrected_fetcher
+        job_id,
+        "Baltagul",
+        "Mihail Sadoveanu",
+        db_session_factory,
+        corrected_fetcher,
+        previous_book_id=previous,
     )
 
     async with db_session_factory() as db:
@@ -385,8 +394,17 @@ async def test_correction_keeps_a_book_the_user_already_rated(
         ],
         settings=get_settings(),
     )
+    async with db_session_factory() as db:
+        scanned = await db.get(Job, job_id)
+        assert scanned is not None and scanned.result is not None
+        previous = scanned.result["book_id"]
     await refresh_book_data(
-        job_id, "Baltagul", "Mihail Sadoveanu", db_session_factory, corrected_fetcher
+        job_id,
+        "Baltagul",
+        "Mihail Sadoveanu",
+        db_session_factory,
+        corrected_fetcher,
+        previous_book_id=previous,
     )
 
     async with db_session_factory() as db:

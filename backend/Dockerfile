@@ -66,10 +66,12 @@ EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=4).status == 200 else 1)"
 
-# ONE worker on purpose: FastAPI BackgroundTasks still ties the scan jobs to
-# this process, so a second worker would be a second job runner with its own
-# in-flight tasks. (Vectors are no longer the reason: they live in Postgres.)
-# This limit is lifted when jobs move to a queue/worker (step 4).
+# Uvicorn workers: 1 by default, raise with WEB_CONCURRENCY (uvicorn reads it).
+# Nothing that matters lives in this process any more -- vectors are in
+# Postgres, and scans run in the separate queue worker container (same image,
+# command `python -m app.workers.queue_worker`), fed through Queue Storage --
+# so the old "exactly one worker" rule is lifted. In Azure the scaling unit is
+# replicas, which is why the default stays 1 per container.
 # --proxy-headers: Azure Container Apps terminates HTTPS in front of the
 # container; this makes uvicorn trust X-Forwarded-* so scheme/client IP are right.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]

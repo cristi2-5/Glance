@@ -137,6 +137,10 @@ Three consequences worth keeping:
 publisher's blurb is marketing copy; a RAG summary is sourced description.
 Letting a reader mistake one for the other is what the label prevents.
 
+### The reader's own photo is an authenticated image, shown as a cover fallback
+
+The backend keeps the scan photo in a private blob container and serves it only to its owner at `GET /books/{id}/library/photo`. `src/features/library/photo.ts` (`useLibraryPhoto`) builds the `expo-image` source with the `Authorization` header and a `?v=<updated_at>` cache-buster (a rescan replaces the photo). `BookCover` falls back catalog cover -> your photo -> initial; the book screen shows a "Your photo" thumbnail (`UserPhoto`) when `has_photo`. Known limit: image requests bypass the axios refresh interceptor, so with an expired access token the photo silently falls back to the initial.
+
 ### Mocks are visibly marked
 
 A screen rendering data the backend cannot produce yet always shows a `<DemoNote>` or a banner. An unmarked mock is a lie on the screen — indistinguishable from a real result during testing.

@@ -66,6 +66,9 @@ class LibraryEntryRead(BaseModel):
     #: are fetched separately — a list of fifty books does not need every
     #: word anyone wrote about any of them.
     journal_count: int = 0
+    #: Whether the reader's own photo of this book can be fetched from
+    #: `GET /books/{id}/library/photo`. The blob name never leaves the server.
+    has_photo: bool = False
     scan_count: int
     first_scanned_at: datetime | None = None
     read_at: datetime | None = None

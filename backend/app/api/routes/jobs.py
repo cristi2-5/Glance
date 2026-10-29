@@ -1,13 +1,14 @@
 """Routes for querying and correcting the state of an asynchronous job."""
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter
 
-from app.api.deps import CurrentUser, DataFetcherDep, DbSession, SessionFactory
-from app.core.exceptions import AccessForbidden, InvalidData, ResourceNotFound
+from app.api.deps import CurrentUser, DbSession, JobQueueDep
+from app.core.exceptions import AccessForbidden, InvalidData, ResourceNotFound, StorageUnavailable
 from app.models.job import Job, JobStatus
 from app.schemas.job import JobPublic
 from app.schemas.vision import CorrectionRequest
-from app.workers.cover_pipeline import EMPTY_BOOK_FIELDS, refresh_book_data
+from app.services.storage import JobKind, JobMessage
+from app.workers.cover_pipeline import EMPTY_BOOK_FIELDS
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -51,11 +52,9 @@ async def read_job(job_id: int, db: DbSession, current_user: CurrentUser) -> Job
 async def correct_job(
     job_id: int,
     correction: CorrectionRequest,
-    background_tasks: BackgroundTasks,
     db: DbSession,
     current_user: CurrentUser,
-    session_factory: SessionFactory,
-    data_fetcher: DataFetcherDep,
+    job_queue: JobQueueDep,
 ) -> Job:
     """Applies a manual title/author correction to a finished job's result.
 
@@ -67,18 +66,19 @@ async def correct_job(
     the catalog data fetched for it — cover, blurb, categories, rating — no
     longer describes what the user is holding. Those fields are cleared
     immediately (so the client can never render another book's cover under
-    a corrected title) and re-fetched in the background. The job goes back
+    a corrected title) and re-fetched by the queue worker. The job goes back
     to `running` for the duration, which the client's existing polling
     already handles.
+
+    The corrected title and author are written to `job.result` here, so the
+    queue message needs only `{"kind": "refresh", "job_id"}`.
 
     Args:
         job_id: The identifier of the job to correct.
         correction: The corrected title/author.
-        background_tasks: The FastAPI background task queue.
         db: The current database session.
         current_user: The authenticated user.
-        session_factory: The session factory passed to the background task.
-        data_fetcher: The fetcher used to re-gather the corrected book.
+        job_queue: Where the refresh message is sent.
 
     Returns:
         The updated job, in `running` while its metadata is re-fetched.
@@ -87,11 +87,20 @@ async def correct_job(
         ResourceNotFound: If no job exists with this id.
         AccessForbidden: If the job belongs to another user.
         InvalidData: If the job has no result yet (not `done`).
+        StorageUnavailable: If the refresh could not be queued. The job is
+            put back to `done` (with the corrected title and no catalog
+            data, a state the client already renders) so the PATCH can
+            simply be retried.
     """
     job = await _get_owned_job(job_id, db, current_user)
 
     if job.status != JobStatus.DONE.value or job.result is None:
         raise InvalidData("Only a finished job's result can be corrected.")
+
+    # Read before the reset below wipes it: the queue worker needs it to
+    # discard the misidentified book's library entry.
+    previous = job.result.get("book_id")
+    previous_book_id = previous if isinstance(previous, int) else None
 
     job.result = {
         **job.result,
@@ -107,12 +116,14 @@ async def correct_job(
     await db.commit()
     await db.refresh(job)
 
-    background_tasks.add_task(
-        refresh_book_data,
-        job_id,
-        correction.title,
-        correction.author,
-        session_factory,
-        data_fetcher,
-    )
+    try:
+        await job_queue.send(
+            JobMessage(kind=JobKind.REFRESH, job_id=job_id, previous_book_id=previous_book_id)
+        )
+    except StorageUnavailable:
+        # Nothing will ever pick this job up: do not leave it `running`
+        # forever. `done` keeps it correctable, so the client may retry.
+        job.status = JobStatus.DONE.value
+        await db.commit()
+        raise
     return job

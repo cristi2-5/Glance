@@ -76,6 +76,14 @@ class AIProviderUnavailable(ExternalServiceUnavailable):
     """Raised when Groq errors, rate-limits, or is unreachable after all retry attempts."""
 
 
+class StorageUnavailable(ExternalServiceUnavailable):
+    """Raised when Blob or Queue Storage cannot be reached or rejects a request."""
+
+
+class BlobNotFound(ResourceNotFound):
+    """Raised when a blob that a database row points at does not exist in storage."""
+
+
 class CoverNotRecognized(GlanceError):
     """Raised when neither OCR nor vision fallback produced a usable title."""
 

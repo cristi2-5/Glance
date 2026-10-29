@@ -24,6 +24,7 @@ import { JournalTimeline } from '@/components/book/JournalTimeline'
 import { RatingInput } from '@/components/book/RatingInput'
 import { RatingStars } from '@/components/book/RatingStele'
 import { ReadingStatusPicker } from '@/components/book/ReadingStatusPicker'
+import { UserPhoto } from '@/components/book/UserPhoto'
 import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -109,6 +110,7 @@ export default function BookScreen() {
   }
 
   const { book } = entry
+  const photoOf = entry.has_photo ? { bookId: entry.book.id, version: entry.updated_at } : null
 
   return (
     <Screen scrollable>
@@ -126,7 +128,7 @@ export default function BookScreen() {
       </Pressable>
 
       <View style={styles.header}>
-        <BookCover size="hero" title={book.title} url={book.cover_url} />
+        <BookCover size="hero" photoOf={photoOf} title={book.title} url={book.cover_url} />
 
         <View style={styles.identity}>
           <Text {...textFit.bookTitleHero} style={styles.title}>
@@ -154,6 +156,16 @@ export default function BookScreen() {
           {book.categories.map((category) => (
             <Chip key={category} label={category} />
           ))}
+        </View>
+      ) : null}
+
+      {/* With no catalog cover the hero above already shows this photo. */}
+      {photoOf && book.cover_url ? (
+        <View style={styles.photo}>
+          <Text {...textFit.micro} style={styles.photoLabel}>
+            YOUR PHOTO
+          </Text>
+          <UserPhoto photoOf={photoOf} title={book.title} />
         </View>
       ) : null}
 
@@ -253,6 +265,14 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: space[2],
     marginTop: space[5],
+  },
+  photo: {
+    gap: space[2],
+    marginTop: space[6],
+  },
+  photoLabel: {
+    ...typography.micro,
+    color: colors.inkFaint,
   },
   controls: {
     gap: space[5],
