@@ -19,7 +19,7 @@ import structlog
 from rapidfuzz import fuzz
 
 from app.core.config import Settings, get_settings
-from app.core.exceptions import CoverNotRecognized
+from app.core.exceptions import CoverNotRecognized, ExternalServiceUnavailable
 from app.schemas.vision import CoverIdentification
 from app.services.groq_client import get_active_ai_client
 from app.services.image_preprocessing import preprocess_cover
@@ -230,14 +230,24 @@ class VisionService:
             ImageProcessingFailed: If the image cannot be decoded.
             CoverNotRecognized: If neither the vision model nor OCR
                 produced a usable title.
+            ExternalServiceUnavailable: If the vision model was unreachable
+                *and* OCR found nothing usable either.
         """
         prepared = preprocess_cover(image_bytes)
 
         vision_result: CoverIdentification | None
+        provider_error: ExternalServiceUnavailable | None = None
         try:
             vision_result = await self._identify_via_vision_model(prepared.jpeg_bytes)
         except CoverNotRecognized:
             vision_result = None
+        except ExternalServiceUnavailable as exc:
+            # The provider is down or rate-limiting (Groq answers 429 after a
+            # burst of scans). OCR runs on this machine and needs no provider,
+            # so it gets its turn instead of the whole scan failing.
+            logger.warning("vision_model_unavailable_falling_back_to_ocr", error=exc.message)
+            vision_result = None
+            provider_error = exc
 
         if (
             vision_result is not None
@@ -248,6 +258,10 @@ class VisionService:
         ocr_result = await self._identify_via_ocr_fallback(prepared.jpeg_bytes)
 
         if ocr_result is None:
+            if provider_error is not None:
+                # Neither path produced a title, but only because the model
+                # was unreachable: say "try again", not "unrecognisable cover".
+                raise provider_error
             if vision_result is None:
                 raise CoverNotRecognized("Could not identify the book from the cover image.")
             return vision_result

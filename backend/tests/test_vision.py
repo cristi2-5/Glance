@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from app.core.config import get_settings
-from app.core.exceptions import CoverNotRecognized
+from app.core.exceptions import AIProviderUnavailable, CoverNotRecognized
 from app.services.ocr_service import OcrService, TextCandidate
 from app.services.title_lookup import BookCandidate
 from app.services.vision_service import (
@@ -402,3 +402,48 @@ def test_looks_like_person_name(line: str, expected: bool) -> None:
 )
 def test_parse_vision_response(raw: str, expected: tuple[str, str | None] | None) -> None:
     assert _parse_vision_response(raw) == expected
+
+
+# --- The vision provider is down ----------------------------------------------
+
+
+class _UnavailableAIClient(FakeOllamaClient):
+    """A provider that is rate-limiting or down, as Groq is after a burst (429)."""
+
+    async def generate(self, *args: object, **kwargs: object) -> str:
+        raise AIProviderUnavailable("Groq model qwen/qwen3.8-27b is unavailable after 3 attempts.")
+
+
+async def test_unavailable_vision_provider_falls_back_to_ocr() -> None:
+    # Observed for real: Groq answered 429 three times and the whole scan
+    # failed, although OCR runs locally and could read the cover.
+    ocr_candidates = [
+        TextCandidate(text="Solaris", score=0.95, relative_height=40, line_index=0),
+        TextCandidate(text="Stanislaw Lem", score=0.9, relative_height=20, line_index=1),
+    ]
+    lookup = FakeTitleLookup([BookCandidate(title="Solaris", authors=["Stanislaw Lem"])])
+    service = VisionService(
+        ocr=OcrService(FakeOcrEngine(ocr_candidates)),
+        ollama=_UnavailableAIClient(),
+        lookup=lookup,
+        settings=get_settings(),
+    )
+
+    result = await service.identify(_cover_bytes())
+
+    assert result.method == "ocr"
+    assert result.title == "Solaris"
+
+
+async def test_unavailable_provider_and_unreadable_cover_reports_the_outage() -> None:
+    # Nothing produced a title, but only because the model was unreachable:
+    # the error must say "temporarily unavailable", not "unrecognisable cover".
+    service = VisionService(
+        ocr=OcrService(FakeOcrEngine([])),
+        ollama=_UnavailableAIClient(),
+        lookup=FakeTitleLookup([]),
+        settings=get_settings(),
+    )
+
+    with pytest.raises(AIProviderUnavailable):
+        await service.identify(_cover_bytes())
