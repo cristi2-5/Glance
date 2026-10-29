@@ -72,7 +72,7 @@ The match score exists, and it orders the list, but it's never shown to you. "73
 
 Everything about *you* stays on the machine running the backend:
 
-- your account, library, ratings and journal notes — a local SQLite file
+- your account, library, ratings and journal notes — a database on your own machine (PostgreSQL in Docker, SQLite when run natively)
 - the vector store — local
 - the embedding model that turns text into vectors — local, via Ollama
 
@@ -82,7 +82,7 @@ That path is still there and still maintained. Setting `AI_PROVIDER=ollama` move
 
 ## Built with
 
-**Backend** — [FastAPI](https://fastapi.tiangolo.com) with async SQLAlchemy over SQLite, [ChromaDB](https://www.trychroma.com) for vectors, [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime for on-device text reading (no PyTorch anywhere), [Ollama](https://ollama.com) for local embeddings, and [Groq](https://groq.com) for hosted inference. Fully type-checked with `mypy --strict`, structured logging via structlog.
+**Backend** — [FastAPI](https://fastapi.tiangolo.com) with async SQLAlchemy over PostgreSQL (SQLite for a native run) with Alembic migrations, [ChromaDB](https://www.trychroma.com) for vectors, [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime for on-device text reading (no PyTorch anywhere), [Ollama](https://ollama.com) for local embeddings, and [Groq](https://groq.com) for hosted inference. Fully type-checked with `mypy --strict`, structured logging via structlog.
 
 **Client** — [React Native](https://reactnative.dev) and [Expo](https://expo.dev) with strict TypeScript, expo-router for navigation, TanStack Query for server state, Zustand for session state, and tokens stored in the device Keychain/Keystore.
 
@@ -104,6 +104,7 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 cp .env.example .env               # fill in JWT_SECRET_KEY and GROQ_API_KEY
+alembic upgrade head               # create the database tables
 uvicorn app.main:app --reload --host 0.0.0.0
 ```
 
@@ -116,7 +117,7 @@ cp backend/.env.example backend/.env   # fill in JWT_SECRET_KEY and GROQ_API_KEY
 docker compose up --build
 ```
 
-This starts the API and an Ollama container with `nomic-embed-text` already baked in. On a machine with little RAM, quit the native Ollama app first — the container has its own copy of the model. Your phone reaches the backend at `http://<laptop-ip>:8000`. With `AI_PROVIDER=ollama`, pull the local models into the container first: `docker compose exec ollama ollama pull moondream` and `docker compose exec ollama ollama pull llama3.2`.
+This starts PostgreSQL, a one-shot `migrate` container that creates the tables, the API, and an Ollama container with `nomic-embed-text` already baked in. On a machine with little RAM, quit the native Ollama app first — the container has its own copy of the model. Your phone reaches the backend at `http://<laptop-ip>:8000`. If you ran an earlier Docker version of the app (which kept its data in SQLite), the new setup starts with a fresh database; run `docker compose down -v` first so the old vector store is wiped too, otherwise new books could pick up old books' passages. With `AI_PROVIDER=ollama`, pull the local models into the container first: `docker compose exec ollama ollama pull moondream` and `docker compose exec ollama ollama pull llama3.2`.
 
 **App:**
 

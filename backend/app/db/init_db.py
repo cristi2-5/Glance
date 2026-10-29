@@ -1,116 +1,120 @@
-"""Table creation and additive schema reconciliation at application startup.
+"""Startup check that the database schema is at the latest Alembic revision.
 
-`Base.metadata.create_all` creates tables that don't exist yet. What it
-does **not** do — and this is the trap it set once already — is alter a
-table that does exist. Adding a column to a model therefore leaves every
-existing database silently one column behind, and the failure surfaces far
-from its cause: `SELECT` names the new column, SQLite answers "no such
-column", and whichever `except` block is nearest reports something vague
-like "fetching the book failed".
+History, because the shape of this module changed on purpose. It used to
+call `Base.metadata.create_all` and then reconcile *added columns*:
+`create_all` never alters an existing table, so a model gaining a column
+left every older database silently one column behind, and the failure
+surfaced far away as "fetching the book failed". The reconciliation was a
+stopgap that handled the one schema change the project had made so far and
+refused everything else (rename, retype, drop, NOT NULL), with a note that
+the day one of those was needed Alembic would replace it.
 
-The tests never catch it, because they build a fresh in-memory database
-from the current metadata on every run. Only a database that predates the
-change can be wrong, and by definition there isn't one in the suite.
+Alembic has replaced it. The schema is now changed only by numbered
+migration scripts (`alembic upgrade head`), run as a separate step rather
+than here: with several api replicas, each migrating at startup would race.
+What remains at startup is a *check*: if the database is not at the head
+revision the api refuses to start, loudly, instead of serving requests that
+will fail obscurely.
 
-So `init_db` also reconciles **added columns**, which is the only schema
-change this project has actually made between modules. Deliberately
-nothing else: it will not drop, rename, retype, or reorder anything, and
-it will not touch constraints or indexes. Those need real migrations, and
-the moment one is required, this is the point to bring in Alembic rather
-than to grow another special case here (see CLAUDE.md).
-
-Every reconciliation is logged. A schema change that happened without
-anyone deciding it should is worth seeing in the startup output.
+The old reconciliation's safety net (catching a model changed without a
+matching change to the database) moved to `tests/test_migrations.py`, which
+migrates an empty database to head and asserts Alembic sees no difference
+from the models. The old suite could never see this bug class, because it
+always built its database from the current metadata.
 """
 
 import structlog
-from sqlalchemy import Connection, inspect, text
-from sqlalchemy.schema import CreateColumn
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from alembic.util import CommandError
+from sqlalchemy import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.db.session import Base, engine
-
-# Required import: registers the models on `Base.metadata` before
-# `create_all`. Without it, their tables would not be created.
-from app.models import (  # noqa: F401
-    Book,
-    Job,
-    JournalEntry,
-    LibraryEntry,
-    RecommendationState,
-    RefreshToken,
-    TextSource,
-    User,
-)
+from app.core.config import BACKEND_DIR
+from app.core.exceptions import SchemaOutOfDate
+from app.db.session import engine
 
 logger = structlog.get_logger(__name__)
 
-
-async def init_db() -> None:
-    """Creates missing tables, then adds any columns missing from existing ones."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_add_missing_columns)
+ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 
 
-def _add_missing_columns(conn: Connection) -> None:
-    """Adds columns present on the models but absent from the database.
-
-    Runs against a sync connection (via `run_sync`), because SQLAlchemy's
-    inspection API is synchronous.
+def alembic_config(url: str | None = None) -> Config:
+    """Builds the Alembic configuration for this project.
 
     Args:
-        conn: The synchronous connection to reconcile through.
-    """
-    inspector = inspect(conn)
-    existing_tables = set(inspector.get_table_names())
-
-    for table in Base.metadata.sorted_tables:
-        if table.name not in existing_tables:
-            # Just created by `create_all`, so it already matches.
-            continue
-
-        present = {column["name"] for column in inspector.get_columns(table.name)}
-        for column in table.columns:
-            if column.name in present:
-                continue
-
-            if not _is_safely_addable(column):
-                # Rather than emit DDL SQLite will reject — or, worse,
-                # accept in a form that silently differs from the model.
-                logger.error(
-                    "schema_column_needs_migration",
-                    table=table.name,
-                    column=column.name,
-                    reason="NOT NULL without a server default cannot be added to a "
-                    "populated table; this needs a real migration.",
-                )
-                continue
-
-            ddl = CreateColumn(column).compile(bind=conn.engine)
-            conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {ddl}"))
-            logger.warning(
-                "schema_column_added",
-                table=table.name,
-                column=column.name,
-                type=str(column.type),
-            )
-
-
-def _is_safely_addable(column: object) -> bool:
-    """Decides whether a column can be added to a populated table as-is.
-
-    `ALTER TABLE ... ADD COLUMN` has to give existing rows *some* value. A
-    nullable column gets `NULL`; one with a server default gets that. A
-    `NOT NULL` column with neither has no correct answer, and SQLite
-    refuses it — correctly, since inventing one would be a data decision
-    this module has no business making.
-
-    Args:
-        column: The SQLAlchemy `Column` being considered.
+        url: A database URL to migrate instead of `Settings.database_url`.
+            `None` leaves the choice to `migrations/env.py`.
 
     Returns:
-        `True` when the column can be added without inventing data.
+        A `Config` with the script location resolved from `BACKEND_DIR`, so
+        it works whatever the process's working directory is.
     """
-    nullable = getattr(column, "nullable", True)
-    server_default = getattr(column, "server_default", None)
-    return bool(nullable) or server_default is not None
+    config = Config(str(ALEMBIC_INI))
+    config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    if url is not None:
+        # configparser treats % as interpolation, which URL-encoded passwords contain.
+        config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    return config
+
+
+def _current_revision(conn: Connection) -> str | None:
+    """Reads the revision recorded in `alembic_version`, `None` if there is none."""
+    return MigrationContext.configure(conn).get_current_revision()
+
+
+async def init_db(db_engine: AsyncEngine | None = None) -> None:
+    """Verifies the database is at the latest migration; never changes it.
+
+    Args:
+        db_engine: The engine to check. Defaults to the application's.
+
+    Raises:
+        SchemaOutOfDate: If the database has no `alembic_version` table,
+            records a revision other than the scripts' head, or the scripts
+            themselves have more than one head.
+    """
+    scripts = ScriptDirectory.from_config(alembic_config())
+    try:
+        head = scripts.get_current_head()
+    except CommandError as exc:
+        # Two branches each adding a migration on top of the same parent.
+        # Not a database problem, so it must not read like one.
+        logger.error("schema_multiple_heads", error=str(exc))
+        raise SchemaOutOfDate(
+            "Migrations have more than one head; merge them (`alembic merge heads`)."
+        ) from exc
+
+    async with (db_engine or engine).connect() as conn:
+        current = await conn.run_sync(_current_revision)
+
+    if current == head:
+        logger.info("schema_up_to_date", revision=head)
+        return
+
+    # A revision the scripts don't know means the database is *ahead*: an
+    # older image rolled back onto a newer schema. "Upgrade" would then fail
+    # with "Can't locate revision", so say what actually happened.
+    ahead = current is not None and _is_unknown(scripts, current)
+    hint = (
+        "the database is newer than this code; deploy the matching image"
+        if ahead
+        else "run `alembic upgrade head`"
+    )
+    logger.error(
+        "schema_revision_mismatch",
+        current_revision=current,
+        head_revision=head,
+        database_ahead=ahead,
+        hint=hint,
+    )
+    raise SchemaOutOfDate(f"Database is at revision {current!r}, code expects {head!r}: {hint}.")
+
+
+def _is_unknown(scripts: ScriptDirectory, revision: str) -> bool:
+    """Whether `revision` is absent from the migration scripts."""
+    try:
+        return scripts.get_revision(revision) is None
+    except CommandError:
+        return True

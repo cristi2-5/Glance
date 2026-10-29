@@ -29,7 +29,7 @@ computed per request, none of it stored here.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Text, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -76,8 +76,8 @@ class RecommendationState(Base):
         unique=True,
         index=True,
     )
-    seed: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    seed: Mapped[str] = mapped_column(Text, nullable=False, default="")
     refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     complete: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("0")
+        Boolean, nullable=False, default=False, server_default=false()
     )

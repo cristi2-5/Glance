@@ -1,11 +1,13 @@
 """Common pytest fixtures for all Glance backend tests."""
 
+import os
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.api.deps import build_data_fetcher, build_vision_service
 from app.core.config import get_settings
@@ -84,12 +86,45 @@ def _build_fake_data_fetcher() -> BookDataFetcher:
 
 @pytest.fixture
 async def db_session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    """In-memory SQLite engine, isolated per test, with all tables created.
+    """A clean database per test: in-memory SQLite, or PostgreSQL via `TEST_DATABASE_URL`.
+
+    With `TEST_DATABASE_URL` set the whole suite runs on that server, which is
+    how Postgres-only failures (type strictness, length limits) are found.
+    Each test drops and recreates every table, so tests stay isolated and
+    ids restart at 1 exactly as they do in SQLite.
 
     Yields:
         An `async_sessionmaker` bound to a clean database, unique to the
         current test.
     """
+    pg_url = os.environ.get("TEST_DATABASE_URL")
+    if pg_url:
+        pg_engine = create_async_engine(pg_url, poolclass=NullPool)
+        async with pg_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        opened: list[AsyncSession] = []
+
+        class _TrackedSession(AsyncSession):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                opened.append(self)
+
+        pg_factory = async_sessionmaker(
+            bind=pg_engine, expire_on_commit=False, autoflush=False, class_=_TrackedSession
+        )
+        try:
+            yield pg_factory
+        finally:
+            # Some tests (by design of the in-memory fixture) never close the
+            # sessions they open. SQLite doesn't care; on PostgreSQL such a
+            # session keeps a transaction open and its table locks block the
+            # next test's `drop_all` forever. Closing them here is the fix.
+            for session in opened:
+                await session.close()
+            await pg_engine.dispose()
+        return
+
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},

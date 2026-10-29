@@ -18,7 +18,7 @@ configure_logging(debug=settings.debug)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Creates the database tables at application startup."""
+    """Refuses to start on a database that is behind the migrations."""
     await init_db()
     yield
 

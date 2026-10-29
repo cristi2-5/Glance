@@ -8,6 +8,7 @@ from app.core.exceptions import CoverNotRecognized
 from app.models.book import SourceKind, SourceName
 from app.models.job import Job, JobStatus
 from app.models.library import LibraryEntry, ReadingStatus
+from app.models.user import User
 from app.schemas.library import LibraryEntryUpdate
 from app.schemas.vision import CoverIdentification
 from app.services import library_service
@@ -37,7 +38,13 @@ class _FakeVisionService:
 
 async def _create_pending_job(session_factory: async_sessionmaker[AsyncSession]) -> int:
     async with session_factory() as db:
-        job = Job(user_id=1, status=JobStatus.PENDING.value)
+        # A real owner: SQLite ignores foreign keys, PostgreSQL enforces them.
+        user = await db.scalar(select(User).where(User.email == "pipeline@example.com"))
+        if user is None:
+            user = User(email="pipeline@example.com", hashed_password="x")
+            db.add(user)
+            await db.flush()
+        job = Job(user_id=user.id, status=JobStatus.PENDING.value)
         db.add(job)
         await db.commit()
         await db.refresh(job)

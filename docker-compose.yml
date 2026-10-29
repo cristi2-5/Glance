@@ -1,22 +1,69 @@
-# Runs Glance the way it will run in the cloud: two containers on a private network.
+# Runs Glance the way it will run in the cloud: separate containers on a private network.
 services:
+  postgres:
+    # pgvector image so step 3 (vectors in the same database) needs no swap.
+    image: pgvector/pgvector:pg17
+    environment:
+      # Dev-only credentials; Key Vault replaces them in step 5.
+      POSTGRES_USER: glance
+      POSTGRES_PASSWORD: glance
+      POSTGRES_DB: glance
+    ports:
+      # Host-side pytest only (TEST_DATABASE_URL). Bound to localhost so the
+      # database is not exposed on the LAN. Connect via 127.0.0.1 (on Windows
+      # "localhost" tries IPv6 first and adds ~2 s to every connection).
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - glance-pg:/var/lib/postgresql/data
+      # Creates the second database `glance_test` on first start.
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Over TCP (-h), not the socket: on a fresh volume the entrypoint first
+      # runs a socket-only server for the init scripts, which would pass a
+      # socket check while `migrate` (connecting over TCP) is still refused.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U glance -d glance"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    # One-shot: applies the schema, then exits. Not done at api startup because
+    # several api replicas would race each other; in Azure this becomes a
+    # Container Apps Job. Same image as api, different command.
+    # No `build:` here: only api builds `glance-backend`. Two services building
+    # the same tag export it concurrently and one fails with "already exists".
+    image: glance-backend
+    pull_policy: never
+    env_file: backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://glance:glance@postgres:5432/glance
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build: ./backend
+    image: glance-backend
     # Secrets are injected at run time, never baked into the image
     # (Key Vault will play this role in Azure).
     env_file: backend/.env
     environment:
-      # Inside the compose network, the embedding server is reached by service name.
+      # Inside the compose network, services are reached by name.
       OLLAMA_HOST: http://ollama:11434
+      DATABASE_URL: postgresql+asyncpg://glance:glance@postgres:5432/glance
       # Explicit so the data location never depends on where the code sits.
-      DATABASE_URL: sqlite+aiosqlite:////app/data/glance.db
       CHROMA_PERSIST_DIR: /app/data/chroma
     ports:
       - "8000:8000"
     volumes:
-      # SQLite + Chroma live on a named volume so they survive container rebuilds.
+      # Chroma lives on a named volume until step 3 moves vectors to Postgres.
       - glance-data:/app/data
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       ollama:
         condition: service_healthy
     restart: unless-stopped
@@ -35,3 +82,4 @@ services:
 
 volumes:
   glance-data:
+  glance-pg:

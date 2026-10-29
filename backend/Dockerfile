@@ -30,6 +30,8 @@ RUN pip install "pytest>=8.3,<9.0" "pytest-asyncio>=0.24,<1.0" "respx>=0.21,<1.0
 WORKDIR /app
 COPY pyproject.toml ./
 COPY app ./app
+COPY alembic.ini ./
+COPY migrations ./migrations
 COPY tests ./tests
 CMD ["python", "-m", "pytest", "-m", "not slow", "-q"]
 
@@ -54,6 +56,10 @@ RUN useradd --create-home --uid 1000 glance \
     && chown -R glance:glance /app
 WORKDIR /app
 COPY --chown=glance:glance app ./app
+# Migrations ship in the same image so the one-shot `migrate` service can run
+# `alembic upgrade head` from it, and the api can check it is at head.
+COPY --chown=glance:glance alembic.ini ./
+COPY --chown=glance:glance migrations ./migrations
 USER glance
 
 EXPOSE 8000

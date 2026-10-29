@@ -17,7 +17,8 @@ it — which is exactly what a stale declared list would eventually do.
 
 from collections import Counter
 from datetime import datetime
-from typing import Any, TypeVar
+from decimal import Decimal
+from typing import Any, TypeVar, cast
 
 import structlog
 from sqlalchemy import Select, case, func, select
@@ -429,7 +430,12 @@ async def compute_stats(db: AsyncSession, user_id: int) -> LibraryStats:
         user_id,
     )
     row = (await db.execute(statement)).one()
-    scanned, read, rated, average, notes = row
+    # SQLAlchemy 2.1 types the columns of this mixed select as `object`. The
+    # counts are ints; `avg` is a `Decimal` on Postgres and a float on SQLite.
+    scanned, read, rated, average, notes = cast(
+        tuple[int | None, int | None, int | None, Decimal | float | None, int | None],
+        tuple(row),
+    )
 
     return LibraryStats(
         books_scanned=scanned or 0,

@@ -6,7 +6,7 @@ This file is automatically loaded by Claude Code at every session. Don't repeat 
 
 **Glance** — mobile app + hybrid backend (local storage/embeddings, cloud AI inference). You photograph a book cover, and the app recognizes the title and author, gathers material about the book from open sources, generates a summary via RAG, and offers personalized recommendations based on reading history.
 
-**Storage, cache, and embeddings stay 100% local (SQLite, ChromaDB, `nomic-embed-text` via Ollama) — no exceptions.** Vision (cover recognition) and LLM generation (RAG summaries) run on **Groq Cloud**, adopted after the locally-sized models proved insufficient. See "Architecture pivot: local vision/LLM → Groq Cloud" below and the "Strict rules" section for the current, precise boundary.
+**Storage is ours: PostgreSQL we run ourselves (compose locally, Azure Flexible Server in the cloud; SQLite for native dev), ChromaDB until step 3, and embeddings from our own Ollama (`nomic-embed-text`) — no third-party data services.** Vision (cover recognition) and LLM generation (RAG summaries) run on **Groq Cloud**, adopted after the locally-sized models proved insufficient. See "Architecture pivot: local vision/LLM → Groq Cloud" below and the "Strict rules" section for the current, precise boundary.
 
 ## Hardware constraints (decisive for design)
 
@@ -164,29 +164,15 @@ The isolation tests run against a **real ephemeral ChromaDB, not a fake** — a 
 
 One collection for the whole corpus, partitioned by this filter — not a collection per book. Chroma holds an HNSW index per collection, and thousands of tiny indexes cost far more memory than one, which matters on a 7.4 GB laptop.
 
-### Adding a column needs `init_db`'s reconciliation — `create_all` is not enough
+### Schema changes go through Alembic (supersedes `init_db`'s column reconciliation)
 
-`Base.metadata.create_all` creates tables that don't exist. It will **not**
-alter one that does. So adding a column to a model leaves every existing
-database one column behind, and the failure lands nowhere near its cause:
-`select(Book)` names every mapped column, so a single missing one breaks
-*every book fetch*, not just the feature that added it — and the nearest
-non-fatal `except` reports it as something vague like "fetching the book
-failed".
-
-**The test suite cannot catch this, ever.** Every test builds a fresh
-in-memory database from the current metadata, so a drift between the models
-and an *older* database is invisible to it by construction. This shipped
-once, in Module 5 (`summary_json`, `summary_generated_at`), and the suite
-was fully green throughout.
-
-`app/db/init_db.py` therefore also reconciles **added columns** at startup,
-logging each one. Deliberately nothing else: it will not drop, rename,
-retype or reorder anything, and it won't touch constraints or indexes.
-`tests/test_schema_reconciliation.py` covers it by building a genuinely
-out-of-date database on disk. A `NOT NULL` column with no server default is
-refused rather than guessed at, and logged as needing a real migration —
-**that is the signal to bring in Alembic**, not to add another case here.
+`create_all` never alters an existing table, so a model gaining a column
+once left every older database one column behind: `select(Book)` named the
+missing column and *every* book fetch failed, reported by the nearest
+`except` as something vague. The suite stayed green because it always built
+its database from the current metadata. `init_db` used to patch that by
+adding missing columns; it handled only that one case and said Alembic was
+the answer for anything else. It now is: see the next decision.
 
 ### Containers (cloud step 1)
 
@@ -207,6 +193,20 @@ refused rather than guessed at, and logged as needing a real migration —
 **`ollama` publishes no port.** Only `api` needs it, and it reaches it by service name on the compose network (`OLLAMA_HOST=http://ollama:11434`). This mirrors an internal-ingress service in the cloud and keeps an unauthenticated model server off the host's network. A native Ollama on the host's 11434 does not conflict for that reason.
 
 **`.env` is injected at run time (`env_file`), never baked into an image.** `.dockerignore` excludes it, so `docker build` cannot copy secrets into a layer. A secret store takes over this role in the cloud. The database and Chroma live on the named volume `glance-data` mounted at `/app/data`, which is where `config.py` already points.
+
+### PostgreSQL + Alembic (cloud step 2)
+
+**Why.** SQLite is a library inside the api process writing a file on its disk. In the cloud that breaks three ways: container disks are throwaway (a restart loses every account and library); a file belongs to one machine, so the separate worker (step 4) and extra api replicas cannot share it, and SQLite over a network share (Azure Files/SMB) corrupts under concurrent writes; and `init_db` could only add columns. Postgres is a server many containers connect to: a `postgres` compose service locally (`pgvector/pgvector:pg17`, so step 3 needs no image swap), Postgres Flexible Server in Azure.
+
+**Migrations run as a one-shot `migrate` service, not at api startup.** With several replicas each would try to migrate at the same moment. Same image as `api`, command `alembic upgrade head`; in step 8 it becomes a Container Apps Job. `api` depends on `migrate: service_completed_successfully`. At startup `init_db` only *checks* that the database is at the head revision and otherwise logs `schema_revision_mismatch` (saying whether the database is behind, or *ahead* after a rollback to an older image) and raises `SchemaOutOfDate`, so a stale schema stops the api instead of failing obscurely later.
+
+**The drift test replaces the old safety net.** `tests/test_migrations.py` runs `alembic upgrade head` on an empty database and asserts Alembic's `compare_metadata` finds no difference from the models: the bug class (model changed, no migration) the suite could never see before. It also checks upgrade, downgrade, upgrade. After changing a model: `alembic revision --autogenerate -m "..."`, then review the script by hand.
+
+**`Text`, not `String(n)`, for external free text.** SQLite ignores VARCHAR lengths; Postgres enforces them, so a long Wikipedia URL or title that scans fine on SQLite would crash the scan. `title`, `author`, `normalized_key`, `cover_url`, `heading`, `url` and `seed` are `Text`; fields with a natural bound (email, token hash, status, ISBNs, source/kind/licence) stay bounded. Likewise the Boolean server default is `sa.false()`, not `text("0")`, which Postgres rejects.
+
+**Hazard: book ids vs Chroma.** A fresh Postgres restarts ids at 1 while Chroma still holds chunks for the *old* book 1, 2, 3, so the new book 1 retrieves the old book 1's passages. The `CorpusLeak` re-check cannot catch it, because the id matches. Switching databases therefore means wiping the corpus too: `docker compose down -v` removes both volumes together (dev data only). This disappears structurally in step 3, when chunks get a foreign key to `books` in the same database.
+
+**SQLite is still supported** (the config default) for native development and the fast suite. A native `data/glance.db` that predates Alembic needs `alembic stamp head` once — **but only after the previous version has opened it**, since its column reconciliation is what brought the file up to the baseline. Stamping an older file makes the startup check report "up to date" over a missing column, the original bug; when in doubt, delete it and `alembic upgrade head`. `TEST_DATABASE_URL=postgresql+asyncpg://...` runs the whole suite (and the migration tests) on Postgres instead of in-memory SQLite.
 
 ### Dual-purpose embeddings
 
@@ -232,7 +232,7 @@ The vectors generated when a book is ingested serve both RAG (Module 5) and reco
 | API framework | `fastapi` + `uvicorn` | async by default |
 | Validation / schemas | `pydantic` v2 | all request/response bodies as `BaseModel` |
 | Config & secrets | `pydantic-settings` + `python-dotenv` | reads from `.env`, never hardcoded |
-| ORM | `sqlalchemy` 2.0 async + `aiosqlite` | `alembic` only once the schema starts evolving |
+| ORM | `sqlalchemy` 2.0 async + `asyncpg` (Postgres) / `aiosqlite` (native dev) | schema changes via `alembic` migrations |
 | Auth | `python-jose[cryptography]` (JWT) + `bcrypt` directly | **not** `passlib` — 1.7.4 breaks with `bcrypt>=4.1`. Clean alternative: `pwdlib[argon2]` |
 | OCR | `rapidocr-onnxruntime` | ONNX, no torch |
 | Image processing | `pillow` | EXIF rotation, resize, recompression |
@@ -294,7 +294,9 @@ backend/
 │   │   └── cover_pipeline.py       # the full job: OCR → fetch → ingest → summary
 │   └── db/
 │       ├── session.py
-│       └── init_db.py
+│       └── init_db.py              # startup check: DB at Alembic head, else refuse to start
+├── alembic.ini                     # URL comes from Settings, never from here
+├── migrations/                     # env.py (async), versions/0001_baseline.py, ...
 ├── tests/
 │   ├── conftest.py
 │   └── fixtures/                   # test covers, mocked HTTP responses
@@ -312,7 +314,9 @@ backend/
 Repo root, next to `backend/` and `frontend/`:
 
 ```
-docker-compose.yml                  # runs `api` + `ollama` together, like the future cloud layout
+docker-compose.yml                  # runs `postgres`, one-shot `migrate`, `api`, `ollama`, like the future cloud layout
+postgres/
+└── init/01-create-test-db.sql      # creates `glance_test` for host-side pytest
 ollama/
 └── Dockerfile                      # CPU-only ollama image, nomic-embed-text:v1.5 baked in
 ```
@@ -388,7 +392,13 @@ pytest                             # run the tests
 pytest -m "not slow"               # skip tests that call Ollama
 black . && ruff check .            # formatting + lint
 mypy app/                          # type checking
-docker compose up --build          # (repo root) run api + ollama in containers; needs backend/.env
+alembic upgrade head               # apply migrations (native dev; compose does it via `migrate`)
+alembic revision --autogenerate -m "..."   # new migration after a model change; review it
+TEST_DATABASE_URL=postgresql+asyncpg://glance:glance@127.0.0.1:5433/glance_test pytest -m "not slow"
+                                   # whole suite on compose's Postgres (docker compose up -d postgres;
+                                   # `glance_test` is created only on a fresh volume, else `createdb` it);
+                                   # 127.0.0.1, not localhost: on Windows localhost tries ::1 first, +2 s per connection
+docker compose up --build          # (repo root) run postgres, migrate, api, ollama; needs backend/.env
 docker build --target test -t glance-api-test backend && docker run --rm glance-api-test
                                    # the suite inside Linux, on the locked versions
 ```
@@ -406,9 +416,9 @@ docker build --target test -t glance-api-test backend && docker run --rm glance-
 
 ## Strict rules
 
-The project is **hybrid**, not 100% local: storage and embeddings stay local; vision and LLM generation default to Groq Cloud. This is a deliberate pivot from the original all-local design — see "Architecture pivot: local vision/LLM → Groq Cloud" above for the reasoning (local model accuracy on this hardware was not good enough, and CPU inference was too slow).
+The project is **hybrid**: storage and embeddings stay ours; vision and LLM generation default to Groq Cloud. This is a deliberate pivot from the original all-local design — see "Architecture pivot: local vision/LLM → Groq Cloud" above for the reasoning (local model accuracy on this hardware was not good enough, and CPU inference was too slow).
 
-- **Storage, cache, and embeddings must stay 100% local** — SQLite, ChromaDB, and `nomic-embed-text` via Ollama. No exceptions, regardless of `ai_provider`.
+- **Storage, cache, and embeddings stay under our control** — Postgres we run (compose locally / Flexible Server in Azure; SQLite natively), ChromaDB until step 3, and `nomic-embed-text` via our own Ollama. No third-party data services, regardless of `ai_provider`.
 - **Vision and LLM generation go through Groq Cloud by default** (`Settings.ai_provider = "groq"`), using `groq.AsyncGroq` with the key in `GROQ_API_KEY`. The local path (`ai_provider = "ollama"`, Moondream + Llama 3.2) must keep working as a fallback — don't let it bit-rot or get deleted.
 - **Never hardcode the provider.** Both integrations go through `Settings.ai_provider` / `Settings.vision_model` / `Settings.llm_model` in `core/config.py`, never a direct `if` on a model name scattered through the code.
 - No other cloud LLM/vision APIs (OpenAI, Anthropic API, etc.) and no Google Colab — Groq is the one deliberate exception, not a general opening.

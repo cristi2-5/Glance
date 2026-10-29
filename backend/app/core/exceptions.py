@@ -101,3 +101,12 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=exc.status_code,
             content={"detail": exc.message},
         )
+
+
+class SchemaOutOfDate(GlanceError):
+    """Raised at startup when the database is not at the latest Alembic revision.
+
+    Serving requests against a schema that is behind the models fails far
+    from its cause (a missing column breaks every `SELECT` of that table),
+    so startup refuses instead. Run `alembic upgrade head` first.
+    """

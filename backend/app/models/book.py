@@ -99,16 +99,19 @@ class Book(Base):
 
     __tablename__ = "books"
 
+    # Free text that arrives from outside (catalogs, Wikipedia, OCR) is `Text`,
+    # not `String(n)`: SQLite ignores VARCHAR lengths but PostgreSQL enforces
+    # them, so a long title or URL that scans fine on SQLite would crash the
+    # scan on Postgres. External data has no natural bound; fields that do
+    # (ISBNs, source/kind/licence names) stay bounded.
     id: Mapped[int] = mapped_column(primary_key=True)
-    normalized_key: Mapped[str] = mapped_column(
-        String(500), nullable=False, unique=True, index=True
-    )
-    title: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
-    author: Mapped[str | None] = mapped_column(String(300), nullable=True, index=True)
+    normalized_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    author: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
 
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     categories: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    cover_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    cover_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     isbn_13: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     isbn_10: Mapped[str | None] = mapped_column(String(20), nullable=True)
     average_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -165,9 +168,9 @@ class TextSource(Base):
     )
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     kind: Mapped[str] = mapped_column(String(50), nullable=False)
-    heading: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    heading: Mapped[str | None] = mapped_column(Text, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
     license: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
