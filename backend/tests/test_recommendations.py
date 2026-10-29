@@ -1,13 +1,13 @@
 """Tests for Module 6b: the profile vector, candidate discovery, and ranking.
 
-**These run against a real ephemeral ChromaDB, not a fake store** — the
-same reasoning as `test_vector_store.py`. The properties that matter most
-here are properties of Chroma's own behaviour: that `$nin` really excludes
-the reader's library, that a cosine "distance" really inverts into the
-similarity the API reports as a score, and that querying without a filter
-really returns the whole collection (which is the *correct* query in this
-collection, and forbidden in the other one). A fake store would only prove
-that our filter-passing code calls itself.
+**These run against the real PostgreSQL + pgvector store, not a fake** —
+the same reasoning as `test_vector_store.py`. The properties that matter
+most here are properties of the database's own behaviour: that `NOT IN`
+really excludes the reader's library, that a cosine "distance" really
+inverts into the similarity the API reports as a score, and that querying
+without a book filter really searches the whole table (which is the
+*correct* query in this table, and forbidden in the chunk one). A fake
+store would only prove that our filter-passing code calls itself.
 
 What is faked is everything with a cost: the catalogs (`FakeCandidateSource`)
 and the embedding model (`HashingEmbeddingClient`, whose vectors track
@@ -24,21 +24,19 @@ never appears, and nothing anywhere says why.
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timedelta
-from pathlib import Path
 
-import chromadb
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
-from app.db.session import Base
 from app.models.book import Book, SourceName
 from app.models.library import LibraryEntry, ReadingStatus
 from app.models.recommendation import RecommendationState
 from app.models.user import User
-from app.services.profile_store import BookProfile, ChromaProfileStore
+from app.services.profile_store import BookProfile, PgProfileStore
 from app.services.recommendation_service import (
     RecommendationService,
     build_profile_document,
@@ -95,18 +93,9 @@ def make_book(
 
 
 @pytest.fixture
-def profile_store() -> Iterator[ChromaProfileStore]:
-    """A profile store over a clean, in-memory Chroma instance.
-
-    `EphemeralClient`s with identical settings share one in-memory system,
-    so the explicit `reset` either side is what actually isolates a test.
-    """
-    client = chromadb.EphemeralClient(
-        settings=chromadb.Settings(allow_reset=True, anonymized_telemetry=False)
-    )
-    client.reset()
-    yield ChromaProfileStore(client)
-    client.reset()
+def profile_store() -> PgProfileStore:
+    """The (stateless) profile store; the database is `db_session_factory`'s."""
+    return PgProfileStore()
 
 
 @pytest.fixture(autouse=True)
@@ -141,12 +130,12 @@ async def user_id(db_session_factory: async_sessionmaker[AsyncSession]) -> Async
 
 def build_service(
     embedder: HashingEmbeddingClient,
-    store: ChromaProfileStore,
+    store: PgProfileStore,
     sources: list[FakeCandidateSource] | None = None,
     spacing: float = 0.0,
     min_discovery_interval: float = 0.0,
 ) -> RecommendationService:
-    """A `RecommendationService` over fakes and the real ephemeral store.
+    """A `RecommendationService` over fakes and the real pgvector store.
 
     `spacing` and `min_discovery_interval` both default to `0.0` rather
     than to their configured values. They exist to keep Google Books from
@@ -194,7 +183,7 @@ async def shelve(
 
 
 async def seed_pool(
-    db: AsyncSession, store: ChromaProfileStore, embedder: HashingEmbeddingClient, books: list[Book]
+    db: AsyncSession, store: PgProfileStore, embedder: HashingEmbeddingClient, books: list[Book]
 ) -> list[Book]:
     """Persists candidate books and writes their profile vectors directly."""
     for book in books:
@@ -208,7 +197,8 @@ async def seed_pool(
         profiles.append(BookProfile(book_id=book.id, document=document))
 
     vectors = await embedder.embed([profile.document for profile in profiles])
-    await store.upsert(profiles, vectors)
+    await store.upsert(db, profiles, vectors)
+    await db.commit()
     return books
 
 
@@ -216,7 +206,7 @@ async def seed_pool(
 
 
 def test_a_book_with_no_blurb_and_no_genres_gets_no_profile_document() -> None:
-    """A bare catalog record is left out of the collection, not embedded thin.
+    """A bare catalog record is left out of the table, not embedded thin.
 
     Romanian editions are almost all bare records — title and author and
     nothing else. Embedding one produces a vector encoding little more
@@ -258,7 +248,7 @@ async def test_nothing_rated_yet_returns_no_recommendations_and_no_catalog_calls
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """A reader who has rated nothing gets an honest empty answer.
 
@@ -284,7 +274,7 @@ async def test_liked_books_the_catalogs_describe_thinly_count_as_a_cold_start(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """Rating a bare record 5 still leaves nothing to build a profile from.
 
@@ -313,12 +303,12 @@ async def test_recommendations_rank_by_similarity_to_what_the_reader_liked(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """The space opera outranks the cookbook, and the score is a similarity.
 
     The whole feature in one assertion. `score` is checked as *descending*
-    rather than merely present: Chroma reports distance, and an inverted
+    rather than merely present: the database reports distance, and an inverted
     comparison anywhere in the chain would recommend the least similar
     books with no error raised at any point.
     """
@@ -352,14 +342,14 @@ async def test_books_already_in_the_library_are_never_recommended(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
-    """The exclusion is pushed into Chroma, and this proves Chroma honours it.
+    """The exclusion is part of the SQL, and this proves the database honours it.
 
     A recommendation for a book on the reader's own shelf renders exactly
     like a good one — same card, same explanation, nothing to notice. The
     book excluded here is the reader's *highest-rated* one, so it is by
-    construction the nearest thing in the collection to their profile
+    construction the nearest thing in the table to their profile
     vector and would top the list if the filter did nothing.
     """
     service = build_service(embedder, profile_store)
@@ -377,7 +367,9 @@ async def test_books_already_in_the_library_are_never_recommended(
             document = build_profile_document(book, 1200)
             assert document is not None
             vectors = await embedder.embed([document])
-            await profile_store.upsert([BookProfile(book_id=book.id, document=document)], vectors)
+            await profile_store.upsert(
+                db, [BookProfile(book_id=book.id, document=document)], vectors
+            )
 
         await seed_pool(
             db,
@@ -396,7 +388,7 @@ async def test_a_disliked_author_is_excluded_from_recommendations(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """Rating one book 1 keeps that author out, however well they rank."""
     service = build_service(embedder, profile_store)
@@ -429,7 +421,7 @@ async def test_an_author_both_liked_and_disliked_is_not_excluded(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """A like beats a dislike — otherwise a favourite author disappears.
 
@@ -470,7 +462,7 @@ async def test_a_middling_rating_neither_recommends_nor_excludes(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """A 3 is a shrug, and a shrug must not delete a genre.
 
@@ -511,7 +503,7 @@ async def test_the_explanation_names_the_liked_book_it_is_actually_nearest_to(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """Two liked books, two candidates, each explained by the right one.
 
@@ -550,7 +542,7 @@ async def test_the_explanation_names_a_shared_genre_when_there_is_one(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """ "Because you liked X" alone says nothing about *this* book."""
     service = build_service(embedder, profile_store)
@@ -583,7 +575,7 @@ async def test_discovery_persists_candidates_as_books_with_no_fetched_sources(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """A discovered book is a real row, but never a *settled* one.
 
@@ -630,7 +622,7 @@ async def test_discovery_never_overwrites_a_book_that_was_already_cached(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """A search hit must not flatten a fully-fetched row.
 
@@ -677,7 +669,7 @@ async def test_discovery_merges_the_same_book_from_two_catalogs(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """One row, characterised by Google's blurb *and* Open Library's subjects.
 
@@ -736,7 +728,7 @@ async def test_generic_catalog_labels_are_never_used_as_discovery_queries(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """`subject:"Fiction"` describes the shelf, not the book.
 
@@ -765,7 +757,7 @@ async def test_a_fresh_pool_is_not_rediscovered_but_a_changed_taste_is(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """The TTL suppresses the second run; a new rating overrides the TTL.
 
@@ -805,7 +797,7 @@ async def test_an_unreachable_catalog_is_retried_rather_than_recorded_as_a_run(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """An outage is not an answer — same rule as `BookDataFetcher`.
 
@@ -840,7 +832,7 @@ async def test_a_source_that_raises_does_not_deny_the_reader_every_suggestion(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """A bug in one catalog client is contained, exactly as in Module 4."""
     broken = FakeCandidateSource(SourceName.GOOGLE_BOOKS, raises=RuntimeError("boom"))
@@ -868,7 +860,7 @@ async def test_queries_to_one_catalog_are_paced_not_fired_together(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """Seeds reach a source one at a time, spaced apart.
 
@@ -905,7 +897,7 @@ async def test_a_catalog_that_goes_down_mid_run_stops_being_queried(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """One unavailable answer ends that source's run, it does not skip past it.
 
@@ -936,7 +928,7 @@ async def test_a_degraded_run_is_retried_within_the_hour_not_the_day(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """A pool built while a catalog was down expires on the short TTL.
 
@@ -980,7 +972,7 @@ async def test_a_clean_run_is_not_retried_two_hours_later(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """The short TTL applies to degraded runs only, not to every run.
 
@@ -1019,7 +1011,7 @@ async def test_two_overlapping_requests_do_not_both_discover(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """Only one of two concurrent requests runs discovery; the other ranks.
 
@@ -1072,7 +1064,7 @@ async def test_discovery_does_not_restart_on_every_rapid_rating(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """A taste change is honoured, but not more often than the floor allows.
 
@@ -1111,60 +1103,51 @@ async def test_discovery_does_not_restart_on_every_rapid_rating(
 
 
 async def test_a_candidate_another_run_just_stored_does_not_fail_the_request(
-    tmp_path: Path,
+    db_session_factory: async_sessionmaker[AsyncSession],
     embedder: HashingEmbeddingClient,
-    profile_store: ChromaProfileStore,
+    profile_store: PgProfileStore,
 ) -> None:
     """The check-then-insert race resolves to a skip, not a 500.
 
     Reading the known keys and inserting the new ones straddles an
     `await`, so two overlapping runs both see a key as absent and both
-    insert it. The loser used to hit
-    `UNIQUE constraint failed: books.normalized_key` — and because the
-    inserts were one batch, that single collision discarded every other
-    row and failed the whole request with a 500.
+    insert it. The loser used to hit a unique-constraint violation on
+    `books.normalized_key` - and because the inserts were one batch, that
+    single collision discarded every other row and failed the whole
+    request with a 500.
 
     `_claim_discovery` makes this rare; the savepoint is what makes it
     harmless, and it has to, because that guard is in-process and would
     not survive a second worker.
 
-    Runs against a **file-backed** database rather than the suite's shared
-    in-memory one. The `StaticPool` fixture hands every session the same
-    DBAPI connection, so two "concurrent" sessions are one transaction and
-    neither the collision nor the recovery is real there. On a file, they
-    get a connection each — which is also what production has, and is the
-    only configuration in which this test could ever have failed.
+    Each session gets its own PostgreSQL connection, so the two runs
+    genuinely collide on the unique key (the second insert waits on the
+    first's uncommitted row, then fails once it commits) - which is also
+    what production has, and the only configuration in which this test
+    could ever have failed.
 
     The guard is deliberately left disabled so the runs really do overlap.
     """
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'race.db'}")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        sessions = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    candidate = BookMetadata(
+        title="Children of Dune",
+        author="Frank Herbert",
+        description=EMPIRE_BLURB,
+        categories=["Space opera"],
+    )
+    service = build_service(embedder, profile_store)
 
-        candidate = BookMetadata(
-            title="Children of Dune",
-            author="Frank Herbert",
-            description=EMPIRE_BLURB,
-            categories=["Space opera"],
-        )
-        service = build_service(embedder, profile_store)
+    async def persist() -> int:
+        async with db_session_factory() as db:
+            return await service._persist_candidates(db, [candidate])
 
-        async def persist() -> int:
-            async with sessions() as db:
-                return await service._persist_candidates(db, [candidate])
+    stored = await asyncio.gather(persist(), persist())
 
-        stored = await asyncio.gather(persist(), persist())
+    # Exactly one run created it; the other found it already there.
+    assert sorted(stored) == [0, 1]
 
-        # Exactly one run created it; the other found it already there.
-        assert sorted(stored) == [0, 1]
-
-        async with sessions() as db:
-            rows = list(await db.scalars(select(Book).where(Book.title == "Children of Dune")))
-        assert len(rows) == 1
-    finally:
-        await engine.dispose()
+    async with db_session_factory() as db:
+        rows = list(await db.scalars(select(Book).where(Book.title == "Children of Dune")))
+    assert len(rows) == 1
 
 
 # --- The endpoint --------------------------------------------------------------
@@ -1204,62 +1187,104 @@ async def test_a_new_account_gets_a_200_with_an_empty_shelf(client: AsyncClient)
 # --- The profile store itself --------------------------------------------------
 
 
+async def _persist_books(
+    db: AsyncSession, count: int, descriptions: list[str | None] | None = None
+) -> list[int]:
+    """Persists `count` bare books and returns their ids.
+
+    The profile table has a foreign key to `books`, so a profile can only
+    be stored for a book that exists.
+    """
+    texts = descriptions or [None] * count
+    books = [
+        make_book(f"Book {index}", "An Author", ["Fiction"], texts[index]) for index in range(count)
+    ]
+    db.add_all(books)
+    await db.commit()
+    return [book.id for book in books]
+
+
 async def test_the_profile_store_refuses_to_pair_a_book_with_another_vector(
-    profile_store: ChromaProfileStore,
+    db_session_factory: async_sessionmaker[AsyncSession],
+    profile_store: PgProfileStore,
 ) -> None:
     """A length mismatch is caught, not written.
 
     Silently misaligned vectors would make every recommendation
     confidently wrong, with nothing anywhere to notice it.
     """
-    with pytest.raises(ValueError):
-        await profile_store.upsert([BookProfile(book_id=1, document="a")], [[0.1], [0.2]])
+    async with db_session_factory() as db:
+        with pytest.raises(ValueError):
+            await profile_store.upsert(db, [BookProfile(book_id=1, document="a")], [[0.1], [0.2]])
 
 
 async def test_the_profile_store_returns_similarity_and_the_vector_it_ranked_on(
-    profile_store: ChromaProfileStore, embedder: HashingEmbeddingClient
+    db_session_factory: async_sessionmaker[AsyncSession],
+    profile_store: PgProfileStore,
+    embedder: HashingEmbeddingClient,
 ) -> None:
-    """Chroma reports distance; the store reports a score, and the embedding.
+    """The database reports distance; the store reports a score, and the embedding.
 
     Returning the vector alongside is what lets the explanation be computed
     without a second round trip per recommendation.
     """
-    profiles = [BookProfile(book_id=1, document=DESERT_BLURB)]
     vectors = await embedder.embed([DESERT_BLURB])
-    await profile_store.upsert(profiles, vectors)
+    async with db_session_factory() as db:
+        (book_id,) = await _persist_books(db, 1)
+        await profile_store.upsert(
+            db, [BookProfile(book_id=book_id, document=DESERT_BLURB)], vectors
+        )
 
-    found = await profile_store.query(vectors[0], n_results=5, exclude_book_ids=set())
+        found = await profile_store.query(db, vectors[0], n_results=5, exclude_book_ids=set())
 
     assert len(found) == 1
-    assert found[0].book_id == 1
+    assert found[0].book_id == book_id
     assert found[0].score == pytest.approx(1.0, abs=1e-4)
     assert len(found[0].vector) == embedder.dimensions
+    assert found[0].vector == pytest.approx(vectors[0], abs=1e-5)
 
 
 async def test_the_profile_store_query_excludes_the_ids_it_is_given(
-    profile_store: ChromaProfileStore, embedder: HashingEmbeddingClient
+    db_session_factory: async_sessionmaker[AsyncSession],
+    profile_store: PgProfileStore,
+    embedder: HashingEmbeddingClient,
 ) -> None:
-    """The `$nin` filter is Chroma's, so it is tested against real Chroma.
+    """The `NOT IN` exclusion is SQL, so it is tested against the real database.
 
     An unfiltered query returning everything is the *correct* behaviour in
-    this collection — the inverse of `vector_store.py`'s invariant — so
-    both directions are asserted here, together, to keep the contrast on
-    the record.
+    this table - the inverse of `vector_store.py`'s invariant - so both
+    directions are asserted here, together, to keep the contrast on the
+    record.
     """
-    documents = {1: DESERT_BLURB, 2: EMPIRE_BLURB, 3: COOKERY_BLURB}
-    profiles = [BookProfile(book_id=key, document=text) for key, text in documents.items()]
-    vectors = await embedder.embed([profile.document for profile in profiles])
-    await profile_store.upsert(profiles, vectors)
+    texts: list[str | None] = [DESERT_BLURB, EMPIRE_BLURB, COOKERY_BLURB]
+    vectors = await embedder.embed([DESERT_BLURB, EMPIRE_BLURB, COOKERY_BLURB])
+    async with db_session_factory() as db:
+        ids = await _persist_books(db, 3, texts)
+        profiles = [
+            BookProfile(book_id=key, document=str(text))
+            for key, text in zip(ids, texts, strict=True)
+        ]
+        await profile_store.upsert(db, profiles, vectors)
 
-    unfiltered = await profile_store.query(vectors[0], n_results=10, exclude_book_ids=set())
-    assert {found.book_id for found in unfiltered} == {1, 2, 3}
+        unfiltered = await profile_store.query(db, vectors[0], n_results=10, exclude_book_ids=set())
+        assert {found.book_id for found in unfiltered} == set(ids)
 
-    filtered = await profile_store.query(vectors[0], n_results=10, exclude_book_ids={1, 3})
-    assert {found.book_id for found in filtered} == {2}
+        filtered = await profile_store.query(
+            db, vectors[0], n_results=10, exclude_book_ids={ids[0], ids[2]}
+        )
+        assert {found.book_id for found in filtered} == {ids[1]}
+
+        # `n_results` still means what it says after exclusions: asking for
+        # one book when the nearest is excluded returns the next nearest,
+        # rather than an empty page.
+        capped = await profile_store.query(db, vectors[0], n_results=1, exclude_book_ids={ids[0]})
+        assert [found.book_id for found in capped] == [ids[1]]
 
 
 async def test_the_profile_store_skips_books_it_has_no_vector_for(
-    profile_store: ChromaProfileStore, embedder: HashingEmbeddingClient
+    db_session_factory: async_sessionmaker[AsyncSession],
+    profile_store: PgProfileStore,
+    embedder: HashingEmbeddingClient,
 ) -> None:
     """A book too thinly catalogued to embed is absent, not an error.
 
@@ -1267,9 +1292,94 @@ async def test_the_profile_store_skips_books_it_has_no_vector_for(
     which need embedding, so "not stored" has to be an ordinary answer.
     """
     vectors = await embedder.embed([DESERT_BLURB])
-    await profile_store.upsert([BookProfile(book_id=7, document=DESERT_BLURB)], vectors)
+    async with db_session_factory() as db:
+        first, second, third = await _persist_books(db, 3)
+        await profile_store.upsert(db, [BookProfile(book_id=first, document=DESERT_BLURB)], vectors)
 
-    found = await profile_store.vectors_for([7, 8, 9])
+        found = await profile_store.vectors_for(db, [first, second, third])
 
-    assert set(found) == {7}
-    assert len(found[7]) == embedder.dimensions
+    assert set(found) == {first}
+    assert len(found[first]) == embedder.dimensions
+
+
+async def test_a_profile_for_a_book_that_does_not_exist_is_rejected(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    profile_store: PgProfileStore,
+    embedder: HashingEmbeddingClient,
+) -> None:
+    """The foreign key refuses a vector with no book behind it."""
+    vectors = await embedder.embed([DESERT_BLURB])
+    async with db_session_factory() as db:
+        with pytest.raises(IntegrityError):
+            await profile_store.upsert(
+                db, [BookProfile(book_id=4242, document=DESERT_BLURB)], vectors
+            )
+
+
+async def test_a_book_deleted_takes_its_profile_with_it(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    profile_store: PgProfileStore,
+    embedder: HashingEmbeddingClient,
+) -> None:
+    """`ON DELETE CASCADE`: no orphaned vector can outlive its book."""
+    vectors = await embedder.embed([DESERT_BLURB])
+    async with db_session_factory() as db:
+        (book_id,) = await _persist_books(db, 1)
+        await profile_store.upsert(
+            db, [BookProfile(book_id=book_id, document=DESERT_BLURB)], vectors
+        )
+        await db.commit()
+        assert set(await profile_store.vectors_for(db, [book_id])) == {book_id}
+
+        book = await db.get(Book, book_id)
+        assert book is not None
+        await db.delete(book)
+        await db.commit()
+
+        assert await profile_store.vectors_for(db, [book_id]) == {}
+
+
+async def test_upserting_a_profile_again_replaces_its_vector(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    profile_store: PgProfileStore,
+    embedder: HashingEmbeddingClient,
+) -> None:
+    """One row per book: a second upsert overwrites rather than duplicating."""
+    first, second = await embedder.embed([DESERT_BLURB, COOKERY_BLURB])
+    async with db_session_factory() as db:
+        (book_id,) = await _persist_books(db, 1)
+        await profile_store.upsert(db, [BookProfile(book_id=book_id, document="a")], [first])
+        await profile_store.upsert(db, [BookProfile(book_id=book_id, document="b")], [second])
+
+        found = await profile_store.vectors_for(db, [book_id])
+
+    assert found[book_id] == pytest.approx(second, abs=1e-5)
+
+
+async def test_the_liked_books_vectors_written_while_recommending_are_committed(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    user_id: int,
+    embedder: HashingEmbeddingClient,
+    profile_store: PgProfileStore,
+) -> None:
+    """Profile vectors written on the `recommend` path survive the request.
+
+    The store joins the caller's transaction and never commits, so
+    `_ensure_profiles` has to. The previous store persisted on write and nothing needed
+    to; without the commit the reader's liked books would be re-embedded on
+    every request, since the vectors would roll back when the session closed.
+    """
+    service = build_service(embedder, profile_store)
+
+    async with db_session_factory() as db:
+        liked = await shelve(
+            db,
+            user_id,
+            make_book("Dune", "Frank Herbert", ["Science fiction"], DESERT_BLURB),
+            rating=5,
+        )
+        await service.recommend(db, user_id)
+        liked_id = liked.id
+
+    async with db_session_factory() as other_session:
+        assert set(await profile_store.vectors_for(other_session, [liked_id])) == {liked_id}

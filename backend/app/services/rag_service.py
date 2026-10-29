@@ -4,7 +4,8 @@ The pipeline, end to end:
 
 1. **Ingest** — a book's cached `TextSource` passages are chunked
    (`chunking.py`), embedded locally with `nomic-embed-text`
-   (`embeddings.py`), and written to ChromaDB (`vector_store.py`).
+   (`embeddings.py`), and written to the `book_chunks` table in PostgreSQL
+   (pgvector, `vector_store.py`).
    Ingestion is idempotent: the book's existing chunks are dropped first,
    so a corpus refreshed after the Module 4 TTL expired cannot leave
    stale chunks behind to be cited alongside the new ones.
@@ -98,14 +99,20 @@ class RagService:
         self._ai = ai_client
         self._settings = settings
 
-    async def ingest(self, book: Book) -> int:
+    async def ingest(self, db: AsyncSession, book: Book) -> int:
         """Chunks, embeds and stores a book's passages.
 
         Idempotent: any chunks already stored for the book are deleted
-        first, so re-ingesting after a source refresh replaces the corpus
-        instead of duplicating it.
+        first, so re-ingesting replaces the corpus instead of duplicating
+        it. (A Module 4 source refresh already removes the old chunks
+        through the `text_source_id` foreign key; the explicit delete also
+        covers re-ingesting an unchanged corpus.)
+
+        Writes join `db`'s transaction and are **not committed** here; the
+        caller commits (`summarize` does, straight after ingesting).
 
         Args:
+            db: The session whose transaction the chunks are written in.
             book: The book whose `text_sources` to ingest.
 
         Returns:
@@ -123,13 +130,17 @@ class RagService:
         # Delete unconditionally, including when there is nothing to write:
         # a book whose sources were refreshed down to nothing must not keep
         # serving the previous fetch's chunks.
-        await self._store.delete_book(book.id)
         if not chunks:
+            await self._store.delete_book(db, book.id)
             logger.info("ingest_empty_corpus", book_id=book.id)
             return 0
 
+        # Embed *before* deleting: the embedding call is the slow, fallible
+        # step, and doing it first means a failed Ollama call leaves the old
+        # chunks untouched and holds no row locks while it runs.
         vectors = await self._embeddings.embed([chunk.content for chunk in chunks])
-        await self._store.upsert(chunks, vectors)
+        await self._store.delete_book(db, book.id)
+        await self._store.upsert(db, chunks, vectors)
         logger.info("book_ingested", book_id=book.id, chunks=len(chunks))
         return len(chunks)
 
@@ -168,10 +179,16 @@ class RagService:
         # first summary, and a corpus refreshed by Module 4 since the last
         # one — `_load_cached_summary` has already rejected the stale
         # summary by that point, so arriving here means a rebuild is due.
-        if await self._store.count_for_book(book.id) == 0:
-            await self.ingest(book)
+        if await self._store.count_for_book(db, book.id) == 0:
+            await self.ingest(db, book)
+            # Commit the corpus now rather than leaving it to
+            # `_store_summary`: that only commits an *available* summary,
+            # and the model call below is slow and can fail. The previous
+            # store persisted on write; here an uncommitted ingest would be lost
+            # (and re-embedded next time) whenever generation went wrong.
+            await db.commit()
 
-        chunks = await self._retrieve(book.id)
+        chunks = await self._retrieve(db, book.id)
         if not chunks:
             logger.info("summary_no_chunks_retrieved", book_id=book.id)
             return BookSummary(book_id=book.id, available=False)
@@ -180,7 +197,7 @@ class RagService:
         await _store_summary(db, book, summary)
         return summary
 
-    async def _retrieve(self, book_id: int) -> list[RetrievedChunk]:
+    async def _retrieve(self, db: AsyncSession, book_id: int) -> list[RetrievedChunk]:
         """Retrieves context chunks for every aspect, deduplicated.
 
         Each aspect is embedded and searched separately, and the results
@@ -189,6 +206,7 @@ class RagService:
         aspect crowding the others out.
 
         Args:
+            db: The session to read through.
             book_id: The only book whose chunks may be retrieved. Passed
                 straight to the store's mandatory filter.
 
@@ -201,7 +219,7 @@ class RagService:
 
         seen: dict[str, RetrievedChunk] = {}
         for vector in vectors:
-            found = await self._store.query(book_id, vector, self._settings.rag_retrieval_top_k)
+            found = await self._store.query(db, book_id, vector, self._settings.rag_retrieval_top_k)
             for chunk in found:
                 # First hit wins: a chunk retrieved for several aspects
                 # keeps the rank of the aspect that wanted it most.
@@ -583,7 +601,7 @@ def build_rag_service() -> RagService:
 
     Returns:
         A service embedding locally through Ollama, storing vectors in the
-        local Chroma directory, and generating summaries through whichever
+        `book_chunks` table, and generating summaries through whichever
         backend `Settings.ai_provider` selects.
     """
     settings = get_settings()

@@ -72,8 +72,8 @@ The match score exists, and it orders the list, but it's never shown to you. "73
 
 Everything about *you* stays on the machine running the backend:
 
-- your account, library, ratings and journal notes — a database on your own machine (PostgreSQL in Docker, SQLite when run natively)
-- the vector store — local
+- your account, library, ratings and journal notes — a PostgreSQL database on your own machine (in Docker)
+- the vector store — the same PostgreSQL database, with the pgvector extension
 - the embedding model that turns text into vectors — local, via Ollama
 
 Two steps run in the cloud, on Groq: reading the cover, and writing the summary. This started out fully local and was changed deliberately — locally-sized models misread titles too often to be trusted and were slow enough to make the app unpleasant to use.
@@ -82,7 +82,7 @@ That path is still there and still maintained. Setting `AI_PROVIDER=ollama` move
 
 ## Built with
 
-**Backend** — [FastAPI](https://fastapi.tiangolo.com) with async SQLAlchemy over PostgreSQL (SQLite for a native run) with Alembic migrations, [ChromaDB](https://www.trychroma.com) for vectors, [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime for on-device text reading (no PyTorch anywhere), [Ollama](https://ollama.com) for local embeddings, and [Groq](https://groq.com) for hosted inference. Fully type-checked with `mypy --strict`, structured logging via structlog.
+**Backend** — [FastAPI](https://fastapi.tiangolo.com) with async SQLAlchemy over PostgreSQL with Alembic migrations and [pgvector](https://github.com/pgvector/pgvector) for vectors, [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime for on-device text reading (no PyTorch anywhere), [Ollama](https://ollama.com) for local embeddings, and [Groq](https://groq.com) for hosted inference. Fully type-checked with `mypy --strict`, structured logging via structlog.
 
 **Client** — [React Native](https://reactnative.dev) and [Expo](https://expo.dev) with strict TypeScript, expo-router for navigation, TanStack Query for server state, Zustand for session state, and tokens stored in the device Keychain/Keystore.
 
@@ -104,11 +104,13 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 cp .env.example .env               # fill in JWT_SECRET_KEY and GROQ_API_KEY
-alembic upgrade head               # create the database tables
+alembic upgrade head               # create the database tables (needs the database: see below)
 uvicorn app.main:app --reload --host 0.0.0.0
 ```
 
 `--host 0.0.0.0` matters — without it the server only listens on localhost and your phone can't reach it.
+
+The backend needs PostgreSQL with pgvector even when you run it natively: start just the database container first, from the repo root, with `docker compose up -d postgres` (the default `DATABASE_URL` points at it). The same container serves the tests: `pytest` fails immediately, with that instruction, if it is not running.
 
 **With Docker (instead of the venv + a local Ollama):**
 
@@ -117,7 +119,7 @@ cp backend/.env.example backend/.env   # fill in JWT_SECRET_KEY and GROQ_API_KEY
 docker compose up --build
 ```
 
-This starts PostgreSQL, a one-shot `migrate` container that creates the tables, the API, and an Ollama container with `nomic-embed-text` already baked in. On a machine with little RAM, quit the native Ollama app first — the container has its own copy of the model. Your phone reaches the backend at `http://<laptop-ip>:8000`. If you ran an earlier Docker version of the app (which kept its data in SQLite), the new setup starts with a fresh database; run `docker compose down -v` first so the old vector store is wiped too, otherwise new books could pick up old books' passages. With `AI_PROVIDER=ollama`, pull the local models into the container first: `docker compose exec ollama ollama pull moondream` and `docker compose exec ollama ollama pull llama3.2`.
+This starts PostgreSQL, a one-shot `migrate` container that creates the tables, the API, and an Ollama container with `nomic-embed-text` already baked in. On a machine with little RAM, quit the native Ollama app first — the container has its own copy of the model. Your phone reaches the backend at `http://<laptop-ip>:8000`. If you ran an earlier version of the app (which kept its data in SQLite and its vectors in a local ChromaDB folder), the new setup starts with a fresh database and ignores the old files. With `AI_PROVIDER=ollama`, pull the local models into the container first: `docker compose exec ollama ollama pull moondream` and `docker compose exec ollama ollama pull llama3.2`.
 
 **App:**
 

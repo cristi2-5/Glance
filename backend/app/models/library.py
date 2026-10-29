@@ -147,8 +147,7 @@ class LibraryEntry(Base):
 
     book: Mapped["Book"] = relationship(lazy="selectin")
     # Eager, because the ORM cascade needs the children loaded to delete
-    # them: SQLite does not enforce `ON DELETE CASCADE` unless
-    # `PRAGMA foreign_keys` is on, which it is not here.
+    # them; the database-level `ON DELETE CASCADE` is only a backstop.
     journal: Mapped[list["JournalEntry"]] = relationship(
         back_populates="library_entry",
         cascade="all, delete-orphan",

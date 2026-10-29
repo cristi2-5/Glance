@@ -3,7 +3,6 @@
 from collections.abc import AsyncIterator
 from typing import Any
 
-from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -12,12 +11,11 @@ from app.core.config import get_settings
 settings = get_settings()
 
 
-def _engine_kwargs(url: str) -> dict[str, Any]:
-    """Chooses pool options that suit the database the URL points at.
+def _engine_kwargs() -> dict[str, Any]:
+    """Chooses the connection-pool options for the PostgreSQL server.
 
-    SQLite is a file in our own process and needs nothing. PostgreSQL is a
-    server across a network, and in Azure that network is hostile to idle
-    connections: the platform closes them silently, and a stopped Flexible
+    The database is a server across a network, and in Azure that network is
+    hostile to idle connections: the platform closes them silently, and a stopped Flexible
     Server (B1ms) drops every one at once. `pool_pre_ping` tests a pooled
     connection before handing it out and replaces a dead one, instead of
     letting the first request after an idle spell fail. The pool is capped
@@ -25,20 +23,13 @@ def _engine_kwargs(url: str) -> dict[str, Any]:
     only ~50 in total, and the worker and extra replicas of later steps
     each bring their own pool.
 
-    Args:
-        url: The SQLAlchemy database URL.
-
     Returns:
         Keyword arguments for `create_async_engine`.
     """
-    if make_url(url).get_backend_name() == "postgresql":
-        return {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 5}
-    return {}
+    return {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 5}
 
 
-engine = create_async_engine(
-    settings.database_url, echo=False, **_engine_kwargs(settings.database_url)
-)
+engine = create_async_engine(settings.database_url, echo=False, **_engine_kwargs())
 
 AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 

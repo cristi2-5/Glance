@@ -2,7 +2,7 @@
 
 Module 3 identifies the cover (`VisionService.identify` → `{title,
 author, confidence}`). Module 4 then hands that pair to
-`BookDataFetcher`, which serves the book from the SQLite cache or fetches
+`BookDataFetcher`, which serves the book from the database cache or fetches
 it from the three official sources on a miss.
 
 The data-fetching stage is deliberately **non-fatal**. Recognition can

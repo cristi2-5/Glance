@@ -14,8 +14,8 @@ Two properties matter for what Module 5 does with these chunks:
    on its own, and it has to carry its provenance (`source`, `url`,
    `license`) rather than just its text.
 2. **Chunk ids must be stable and book-scoped.** `book_id` is baked into
-   the id (`b{book_id}:s{source_id}:{index}`) as well as into the
-   metadata, so a chunk can be traced to its book from the id alone —
+   the id (`b{book_id}:s{source_id}:{index}`) as well as into its
+   `book_id` column, so a chunk can be traced to its book from the id alone —
    which is what makes the cross-book leak assertion in `vector_store.py`
    possible without a second lookup.
 
@@ -103,28 +103,6 @@ class Chunk:
         self.license = license
         self.content = content
 
-    def metadata(self) -> dict[str, str | int]:
-        """Builds the Chroma metadata payload for this chunk.
-
-        `book_id` is stored as an `int`, matching the type used in the
-        retrieval filter — Chroma compares metadata values by exact type,
-        so a chunk written with a string `book_id` would be invisible to
-        an `int` filter (and vice versa), silently and with no error.
-
-        Returns:
-            The metadata dict. Chroma rejects `None` values, so optional
-            fields collapse to empty strings and are restored on read.
-        """
-        return {
-            "book_id": self.book_id,
-            "text_source_id": self.text_source_id,
-            "source": self.source,
-            "kind": self.kind,
-            "heading": self.heading or "",
-            "url": self.url or "",
-            "license": self.license or "",
-        }
-
     def __repr__(self) -> str:
         return f"Chunk(id={self.id!r}, book_id={self.book_id}, kind={self.kind!r})"
 
@@ -144,7 +122,7 @@ def chunk_text_sources(
 
     Args:
         book_id: The book these passages belong to. Baked into every
-            chunk id and every metadata payload.
+            chunk id and carried on every chunk.
         sources: The `TextSource` rows to chunk.
         target_tokens: Approximate token budget per chunk.
         overlap_tokens: Approximate token overlap between neighbours, so a

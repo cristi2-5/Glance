@@ -7,7 +7,7 @@ pre-populated with unrelated works.
 
 The flow:
 
-1. Look the book up in SQLite by a normalized title+author key. A fresh
+1. Look the book up in the database by a normalized title+author key. A fresh
    hit (metadata present and text sources within the TTL) returns
    immediately, with no external call at all.
 2. On a miss, query the three official sources — Google Books, Open
@@ -26,7 +26,7 @@ those states; it never sees a 500 because an external site was slow.
 The one thing an outage must *not* do is get cached. `SourceResult`
 separates "reached it, no such book" from "could not reach it", and only
 the former is persisted as a settled answer — otherwise a transient 503
-would pin an empty entry in SQLite for the entire TTL.
+would pin an empty entry in the database for the entire TTL.
 """
 
 import asyncio

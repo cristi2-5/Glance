@@ -6,17 +6,16 @@ credential sits in a committed file) unless the caller has already set the
 temporary database without touching the environment.
 
 The environment is async because the application's drivers are
-(`aiosqlite`, `asyncpg`); `run_sync` hands Alembic the synchronous
+(`asyncpg`); `run_sync` hands Alembic the synchronous
 connection it needs.
 """
 
 import asyncio
 import logging
 from logging.config import fileConfig
-from pathlib import Path
 
 from alembic import context
-from sqlalchemy import Connection, make_url, pool
+from sqlalchemy import Connection, pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import get_settings
@@ -26,6 +25,8 @@ from app.db.session import Base
 # autogenerate and the drift test compare the database against.
 from app.models import (  # noqa: F401
     Book,
+    BookChunk,
+    BookProfileRow,
     Job,
     JournalEntry,
     LibraryEntry,
@@ -48,14 +49,7 @@ if config.config_file_name is not None and not logging.getLogger().handlers:
 
 def _database_url() -> str:
     """Resolves the URL to migrate: an explicit override, else the application's setting."""
-    url = config.get_main_option("sqlalchemy.url") or get_settings().database_url
-    parsed = make_url(url)
-    database = parsed.database
-    if parsed.get_backend_name() == "sqlite" and database and database != ":memory:":
-        # `data/` is gitignored, so on a fresh clone it doesn't exist and
-        # SQLite fails with "unable to open database file".
-        Path(database).parent.mkdir(parents=True, exist_ok=True)
-    return url
+    return config.get_main_option("sqlalchemy.url") or get_settings().database_url
 
 
 def _configure(connection: Connection | None, url: str | None = None) -> None:
@@ -64,9 +58,6 @@ def _configure(connection: Connection | None, url: str | None = None) -> None:
         url=url,
         target_metadata=target_metadata,
         literal_binds=connection is None,
-        # SQLite cannot ALTER most things in place; batch mode rebuilds the
-        # table instead. It is a no-op on PostgreSQL, so one script serves both.
-        render_as_batch=True,
         # Notice a column whose type changed, not only added/removed ones.
         compare_type=True,
     )

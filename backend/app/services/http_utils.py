@@ -12,7 +12,7 @@ it is asked, so retrying only makes every scan slower).
 Unlike the Module 3 version, the result distinguishes **"reached it, no
 such page"** (a 404 — a real answer, safe to cache) from **"could not
 reach it"** (timeout, 5xx, quota — must not be cached, or one transient
-outage would pin an empty entry in SQLite for the whole TTL).
+outage would pin an empty entry in the database for the whole TTL).
 """
 
 import asyncio

@@ -5,8 +5,8 @@ which is Module 5's definition of done: the whole pipeline runs over a
 fixture corpus with known content, and every sentence of the result is
 checked back to a real chunk of the right book.
 
-These run the *real* pipeline — real chunking, real ChromaDB, real
-retrieval and filtering — with only two things faked: the embedding model
+These run the *real* pipeline — real chunking, real Postgres + pgvector,
+real retrieval and filtering — with only two things faked: the embedding model
 (`HashingEmbeddingClient`, deterministic and offline) and the summary
 model (`ScriptedSummaryClient`, which answers from the prompt it is
 given). Faking the model is what makes the assertions possible at all: a
@@ -18,19 +18,18 @@ suite pins what the pipeline does with each.
 
 import json
 import re
-from collections.abc import Iterator
 from datetime import datetime, timedelta
 
-import chromadb
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
-from app.models.book import Book
+from app.core.exceptions import AIProviderUnavailable
+from app.models.book import Book, SourceKind, SourceName, TextSource
 from app.schemas.summary import SummaryClaim
 from app.services.chunking import chunk_text_sources
 from app.services.rag_service import RagService, build_prompt, verify_claims
-from app.services.vector_store import ChromaVectorStore, RetrievedChunk
+from app.services.vector_store import PgVectorStore, RetrievedChunk
 from tests.fakes import HashingEmbeddingClient, ScriptedSummaryClient
 from tests.fixtures.rag_corpus import (
     DUNE_MARKERS,
@@ -42,17 +41,6 @@ from tests.fixtures.rag_corpus import (
 
 # Matches one passage block in the prompt: "[id] (source — label)\ncontent".
 _PASSAGE_BLOCK = re.compile(r"\[([^\]]+)\] \([^)]*\)\n(.+?)(?=\n\n\[|\n\nASPECTS)", re.DOTALL)
-
-
-@pytest.fixture
-def chroma_client() -> Iterator[chromadb.api.ClientAPI]:
-    """A clean in-memory Chroma instance per test."""
-    client = chromadb.EphemeralClient(
-        settings=chromadb.Settings(allow_reset=True, anonymized_telemetry=False)
-    )
-    client.reset()
-    yield client
-    client.reset()
 
 
 def parse_prompt_passages(prompt: str) -> dict[str, str]:
@@ -86,15 +74,14 @@ def grounded_responder(prompt: str) -> str:
 
 
 async def _make_service(
-    chroma_client: chromadb.api.ClientAPI,
     responder: object,
 ) -> tuple[RagService, HashingEmbeddingClient, ScriptedSummaryClient]:
-    """Builds a `RagService` over real Chroma with fake model backends."""
+    """Builds a `RagService` over the real pgvector store with fake model backends."""
     embedder = HashingEmbeddingClient()
     ai_client = ScriptedSummaryClient(responder)  # type: ignore[arg-type]
     service = RagService(
         embeddings=embedder,
-        vector_store=ChromaVectorStore(chroma_client),
+        vector_store=PgVectorStore(),
         ai_client=ai_client,
         settings=get_settings(),
     )
@@ -117,7 +104,6 @@ async def _persist(session_factory: async_sessionmaker[AsyncSession], *books: Bo
 
 async def test_every_sentence_in_the_summary_traces_to_a_chunk(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """**Module 5's definition of done.**
 
@@ -133,7 +119,7 @@ async def test_every_sentence_in_the_summary_traces_to_a_chunk(
     """
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, grounded_responder)
+    service, _, _ = await _make_service(grounded_responder)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -174,7 +160,6 @@ async def test_every_sentence_in_the_summary_traces_to_a_chunk(
 
 async def test_summary_never_contains_another_books_content(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """With two books ingested, a summary of one cites only that one.
 
@@ -185,12 +170,12 @@ async def test_summary_never_contains_another_books_content(
     foundation = build_foundation()
     dune_id, foundation_id = await _persist(db_session_factory, dune, foundation)
 
-    service, _, _ = await _make_service(chroma_client, grounded_responder)
+    service, _, _ = await _make_service(grounded_responder)
 
     async with db_session_factory() as db:
         other = await db.get(Book, foundation_id)
         assert other is not None
-        await service.ingest(other)
+        await service.ingest(db, other)
 
         book = await db.get(Book, dune_id)
         assert book is not None
@@ -210,7 +195,6 @@ async def test_summary_never_contains_another_books_content(
 
 async def test_marker_facts_are_attributed_to_the_right_passage(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A claim mentioning a known marker cites the passage that contains it.
 
@@ -220,7 +204,7 @@ async def test_marker_facts_are_attributed_to_the_right_passage(
     """
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, grounded_responder)
+    service, _, _ = await _make_service(grounded_responder)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -248,7 +232,6 @@ async def test_marker_facts_are_attributed_to_the_right_passage(
 
 async def test_claims_citing_invented_chunks_are_dropped(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A model that invents a citation gets that claim removed, not shown.
 
@@ -274,7 +257,7 @@ async def test_claims_citing_invented_chunks_are_dropped(
 
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, hallucinating)
+    service, _, _ = await _make_service(hallucinating)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -289,7 +272,6 @@ async def test_claims_citing_invented_chunks_are_dropped(
 
 async def test_partially_invalid_citations_keep_only_the_real_ones(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A claim citing one real and one invented id keeps only the real one.
 
@@ -308,7 +290,7 @@ async def test_partially_invalid_citations_keep_only_the_real_ones(
 
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, mixed)
+    service, _, _ = await _make_service(mixed)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -323,7 +305,6 @@ async def test_partially_invalid_citations_keep_only_the_real_ones(
 
 async def test_summary_unavailable_when_no_claim_survives(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """If nothing verifies, the summary is reported unavailable, not faked.
 
@@ -341,7 +322,7 @@ async def test_summary_unavailable_when_no_claim_survives(
 
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, all_invented)
+    service, _, _ = await _make_service(all_invented)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -355,7 +336,6 @@ async def test_summary_unavailable_when_no_claim_survives(
 
 async def test_uncovered_aspects_are_reported(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """Gaps the model reports are carried through to the client."""
 
@@ -370,7 +350,7 @@ async def test_uncovered_aspects_are_reported(
 
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, with_gap)
+    service, _, _ = await _make_service(with_gap)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -392,13 +372,12 @@ async def test_uncovered_aspects_are_reported(
 )
 async def test_unusable_model_replies_yield_no_summary(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
     reply: str,
 ) -> None:
     """A malformed reply is an unavailable summary, never a crash."""
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, lambda _prompt: reply)
+    service, _, _ = await _make_service(lambda _prompt: reply)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -410,7 +389,6 @@ async def test_unusable_model_replies_yield_no_summary(
 
 async def test_json_wrapped_in_prose_is_still_parsed(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A reply padded with a code fence or preamble still parses."""
 
@@ -423,7 +401,7 @@ async def test_json_wrapped_in_prose_is_still_parsed(
 
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, fenced)
+    service, _, _ = await _make_service(fenced)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -556,27 +534,26 @@ def test_verify_preserves_order_and_strips_whitespace() -> None:
 
 async def test_ingest_is_idempotent(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """Re-ingesting replaces a book's chunks instead of duplicating them."""
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, _ = await _make_service(chroma_client, grounded_responder)
-    store = ChromaVectorStore(chroma_client)
+    service, _, _ = await _make_service(grounded_responder)
+    store = PgVectorStore()
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
         assert book is not None
-        first = await service.ingest(book)
-        second = await service.ingest(book)
+        first = await service.ingest(db, book)
+        second = await service.ingest(db, book)
+        stored = await store.count_for_book(db, book_id)
 
     assert first == second
-    assert await store.count_for_book(book_id) == first
+    assert stored == first
 
 
 async def test_book_without_passages_gets_no_summary(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A book with an empty corpus reports unavailable without calling the model.
 
@@ -591,7 +568,7 @@ async def test_book_without_passages_gets_no_summary(
         metadata_found=False,
     )
     (book_id,) = await _persist(db_session_factory, bare)
-    service, _, ai_client = await _make_service(chroma_client, grounded_responder)
+    service, _, ai_client = await _make_service(grounded_responder)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -604,12 +581,11 @@ async def test_book_without_passages_gets_no_summary(
 
 async def test_summary_is_cached_and_reused(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A second request serves the stored summary without calling the model."""
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, ai_client = await _make_service(chroma_client, grounded_responder)
+    service, _, ai_client = await _make_service(grounded_responder)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -629,7 +605,6 @@ async def test_summary_is_cached_and_reused(
 
 async def test_summary_is_regenerated_when_the_corpus_is_refreshed(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A summary older than its sources is rebuilt, not served.
 
@@ -639,7 +614,7 @@ async def test_summary_is_regenerated_when_the_corpus_is_refreshed(
     """
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, ai_client = await _make_service(chroma_client, grounded_responder)
+    service, _, ai_client = await _make_service(grounded_responder)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -665,7 +640,6 @@ async def test_summary_is_regenerated_when_the_corpus_is_refreshed(
 
 async def test_unavailable_summaries_are_not_cached(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A failed generation is retried next time rather than pinned.
 
@@ -674,7 +648,7 @@ async def test_unavailable_summaries_are_not_cached(
     """
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, ai_client = await _make_service(chroma_client, lambda _prompt: "not usable output")
+    service, _, ai_client = await _make_service(lambda _prompt: "not usable output")
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -693,7 +667,6 @@ async def test_unavailable_summaries_are_not_cached(
 
 async def test_generation_uses_the_configured_llm_in_json_mode(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """The summary call goes to `Settings.llm_model`, never a hardcoded name.
 
@@ -703,7 +676,7 @@ async def test_generation_uses_the_configured_llm_in_json_mode(
     """
     dune = build_dune()
     (book_id,) = await _persist(db_session_factory, dune)
-    service, _, ai_client = await _make_service(chroma_client, grounded_responder)
+    service, _, ai_client = await _make_service(grounded_responder)
 
     async with db_session_factory() as db:
         book = await db.get(Book, book_id)
@@ -715,3 +688,98 @@ async def test_generation_uses_the_configured_llm_in_json_mode(
     assert call.format == "json"
     assert call.options is not None
     assert call.options["temperature"] == 0.0
+
+
+async def test_a_source_refresh_removes_the_old_chunks_and_the_next_summary_reingests(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A Module 4 refresh must not leave chunks of sources that no longer exist.
+
+    `BookDataFetcher` replaces `book.text_sources` wholesale (`[:] =`, with
+    `delete-orphan` dropping the old rows). With the old file-based store the
+    chunks cut from those rows were never removed: `count_for_book` stayed
+    above zero, `summarize` therefore never re-ingested, and retrieval kept
+    citing passages whose sources were gone. The `text_source_id` foreign
+    key (`ON DELETE CASCADE`) now deletes them in the refresh's own
+    transaction, so the next summary finds the book un-ingested and rebuilds
+    its corpus from the new passages.
+    """
+    (book_id,) = await _persist(db_session_factory, build_dune())
+    service, _, ai_client = await _make_service(grounded_responder)
+    store = PgVectorStore()
+
+    async with db_session_factory() as db:
+        book = await db.get(Book, book_id)
+        assert book is not None
+        await service.summarize(db, book)
+        old_ids = {source.id for source in book.text_sources}
+        assert await store.count_for_book(db, book_id) > 0
+
+    # The refresh, exactly as `BookDataFetcher` performs it.
+    async with db_session_factory() as db:
+        book = await db.get(Book, book_id)
+        assert book is not None
+        book.text_sources[:] = [
+            TextSource(
+                source=SourceName.GOOGLE_BOOKS.value,
+                kind=SourceKind.DESCRIPTION.value,
+                content="A freshly fetched blurb about the desert planet Arrakis.",
+                url="https://books.example.test/dune-2",
+            )
+        ]
+        book.sources_fetched_at = datetime.utcnow() + timedelta(minutes=5)
+        await db.commit()
+
+        assert await store.count_for_book(db, book_id) == 0, "stale chunks survived the refresh"
+
+    async with db_session_factory() as db:
+        book = await db.get(Book, book_id)
+        assert book is not None
+        summary = await service.summarize(db, book)
+        new_ids = {source.id for source in book.text_sources}
+        stored = await store.count_for_book(db, book_id)
+
+    assert summary.available
+    assert not old_ids & new_ids
+    assert stored == 1
+    assert all(
+        chunk_id.split(":")[1] in {f"s{source_id}" for source_id in new_ids}
+        for review in summary.reviews
+        for chunk_id in [review.id]
+    ), "the summary cites a chunk of a source that was replaced"
+    assert len(ai_client.calls) == 2
+
+
+async def test_the_corpus_is_kept_when_generation_fails(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A failed model call must not throw away the (expensive) ingest.
+
+    Ingesting embeds every chunk through Ollama. The summary is only stored
+    when it is available, so without an explicit commit after ingesting, a
+    Groq outage would roll the whole corpus back and the retry would pay
+    for the embeddings again.
+    """
+    (book_id,) = await _persist(db_session_factory, build_dune())
+    service = RagService(
+        embeddings=HashingEmbeddingClient(),
+        vector_store=PgVectorStore(),
+        ai_client=_UnreachableAiClient(),  # type: ignore[arg-type]
+        settings=get_settings(),
+    )
+
+    async with db_session_factory() as db:
+        book = await db.get(Book, book_id)
+        assert book is not None
+        with pytest.raises(AIProviderUnavailable):
+            await service.summarize(db, book)
+
+    async with db_session_factory() as db:
+        assert await PgVectorStore().count_for_book(db, book_id) > 0
+
+
+class _UnreachableAiClient:
+    """An AI client that is always down."""
+
+    async def generate(self, *args: object, **kwargs: object) -> str:
+        raise AIProviderUnavailable("Groq is unavailable after 3 attempts.")

@@ -196,9 +196,8 @@ async def test_removing_the_book_takes_its_journal_with_it(
 ) -> None:
     """The cascade, asserted rather than assumed.
 
-    SQLite does not enforce `ON DELETE CASCADE` unless `PRAGMA
-    foreign_keys` is on — which it is not here — so the notes are removed
-    by the ORM cascade, which only works because the relationship is
+    The notes are removed by the ORM cascade (the database-level
+    `ON DELETE CASCADE` is only a backstop), which only works because the relationship is
     eagerly loaded. Orphaned notes would otherwise reappear under the
     next entry that happened to reuse the id.
     """

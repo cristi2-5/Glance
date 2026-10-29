@@ -6,7 +6,7 @@ This file is automatically loaded by Claude Code at every session. Don't repeat 
 
 **Glance** — mobile app + hybrid backend (local storage/embeddings, cloud AI inference). You photograph a book cover, and the app recognizes the title and author, gathers material about the book from open sources, generates a summary via RAG, and offers personalized recommendations based on reading history.
 
-**Storage is ours: PostgreSQL we run ourselves (compose locally, Azure Flexible Server in the cloud; SQLite for native dev), ChromaDB until step 3, and embeddings from our own Ollama (`nomic-embed-text`) — no third-party data services.** Vision (cover recognition) and LLM generation (RAG summaries) run on **Groq Cloud**, adopted after the locally-sized models proved insufficient. See "Architecture pivot: local vision/LLM → Groq Cloud" below and the "Strict rules" section for the current, precise boundary.
+**Storage is ours: one PostgreSQL we run ourselves (compose locally, Azure Flexible Server in the cloud) holds the relational data *and* the vectors (pgvector), and embeddings come from our own Ollama (`nomic-embed-text`) — no third-party data services.** Vision (cover recognition) and LLM generation (RAG summaries) run on **Groq Cloud**, adopted after the locally-sized models proved insufficient. See "Architecture pivot: local vision/LLM → Groq Cloud" below and the "Strict rules" section for the current, precise boundary.
 
 ## Hardware constraints (decisive for design)
 
@@ -15,7 +15,7 @@ Development laptop: **7.4 GB total RAM**, CPU-only, Windows 11, Python 3.11.9, O
 Non-negotiable consequences:
 
 1. **Never load two Ollama models simultaneously.** Set `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_KEEP_ALIVE=5m`. Reloading costs 2-4 s; swapping would cost minutes.
-2. **The full pipeline takes 30-120 s.** So heavy endpoints are **asynchronous**: they return `202 Accepted` + `job_id`, and the client polls `GET /jobs/{id}`. No Celery/Redis — just `BackgroundTasks` and a `jobs` table in SQLite.
+2. **The full pipeline takes 30-120 s.** So heavy endpoints are **asynchronous**: they return `202 Accepted` + `job_id`, and the client polls `GET /jobs/{id}`. No Celery/Redis — just `BackgroundTasks` and a `jobs` table in the database.
 3. **We avoid PyTorch.** ~2.5 GB of disk install and hundreds of MB of RAM for something Ollama already does. Embeddings via `nomic-embed-text`, OCR via ONNX Runtime.
 
 ## Architecture
@@ -35,13 +35,13 @@ FastAPI backend (local, on laptop)
       ├── qwen/qwen3.8-27b (via Groq)  → title/author from the cover, runs first    [cloud, seconds]
       ├── RapidOCR (ONNX)              → fallback when Groq's guess is unconfirmed  [fast, <1 s]
       ├── Google Books / Open Library / Wikipedia → metadata + text about the book
-      ├── SQLite                       → users, jobs, books, sources, library_entries, journal_entries,
-      │                                  recommendation_states
-      ├── ChromaDB                     → embeddings (nomic-embed-text, local via Ollama), two collections:
+      ├── PostgreSQL + pgvector        → users, jobs, books, sources, library_entries, journal_entries,
+      │                                  recommendation_states, plus the embeddings
+      │                                  (nomic-embed-text, local via Ollama) in two tables:
       │                                  `book_chunks`   — one row per passage, retrieval ALWAYS filtered
       │                                                    on book_id (Module 5's invariant, see below)
       │                                  `book_profiles` — one row per whole book, queried ACROSS books
-      │                                                    (Module 6b) — separate collection, separate rule
+      │                                                    (Module 6b) — separate table, separate rule
       └── openai/gpt-oss-120b (via Groq) → summary generated from retrieved context, one citation per claim
 
 Local fallback (Settings.ai_provider="ollama"): Moondream and Llama 3.2 via
@@ -60,7 +60,7 @@ Ollama take over the two Groq rows above, unchanged otherwise — see
 
 **Why:** on this laptop's hardware (7.4 GB RAM, CPU-only — see "Hardware constraints"), the locally-sized models were not good enough to ship. Moondream misidentified titles/authors often enough to undermine the OCR-first pipeline's fallback path, and CPU inference for both vision and summary generation was slow enough (15-40 s per call) to make the async job pipeline feel worse than it needed to. Groq's hosted inference is both faster and more accurate at this model size, at the cost of the original "100% local" guarantee.
 
-**What stayed local:** SQLite, ChromaDB, and embeddings (`nomic-embed-text` via Ollama) are unaffected — this pivot is scoped to vision and LLM-generation inference only. See "Strict rules" for the precise, current boundary.
+**What stayed local:** PostgreSQL (with the vectors) and embeddings (`nomic-embed-text` via Ollama) are unaffected — this pivot is scoped to vision and LLM-generation inference only. See "Strict rules" for the precise, current boundary.
 
 **How it's wired:** both integrations are config-driven, not hardcoded — `Settings.ai_provider: Literal["groq", "ollama"]` in `core/config.py`, plus `Settings.vision_model` / `Settings.llm_model` computed properties that resolve to the right model name for whichever provider is active. `app/services/groq_client.py` defines `AsyncGroqClient`, which is call-compatible with the existing `OllamaClient` Protocol (`app/services/ollama_client.py`) — same `generate(model, prompt, images, format, options)` shape — so `VisionService` and `RagService` don't know or care which backend they're talking to. `get_active_ai_client()` is the single switch point; reinstating the local-only setup later means setting `AI_PROVIDER=ollama` in `.env`, no code change. Groq errors (including the vision model's preview-model rate limits and instability) are retried with backoff and surfaced as `AIProviderUnavailable`, never left to propagate raw.
 
@@ -124,7 +124,7 @@ Step 2 is by ISBN only, deliberately. The *title/author* route into Open Library
 
 Which case a given image is stays visible rather than being guessed at: the hosting path (`/wikipedia/commons/` vs `/wikipedia/en/`) tells the two apart with no extra API call, and every hit logs `cover_fallback_hit` with `on_commons` and a licensing note.
 
-**This decision must be revisited if the app is ever published, shared, or made public in any form** — including a public GitHub repo that ships a populated `data/` directory. The switch is already in place: `Settings.wikipedia_cover_fallback` (`WIKIPEDIA_COVER_FALLBACK` in `.env`) turns step 3 off and leaves steps 1-2, both freely licensed, working. Flipping it does not clear covers already cached in SQLite; those would need deleting separately.
+**This decision must be revisited if the app is ever published, shared, or made public in any form** — including a public GitHub repo that ships a populated database dump. The switch is already in place: `Settings.wikipedia_cover_fallback` (`WIKIPEDIA_COVER_FALLBACK` in `.env`) turns step 3 off and leaves steps 1-2, both freely licensed, working. Flipping it does not clear covers already cached in the database; those would need deleting separately.
 
 Two smaller notes. Open Library's Covers API answers `200` with a **blank grey placeholder** for an ISBN it has no image for, so the probe passes `?default=false` to turn that into an honest `404`, and confirms the URL with a `HEAD` before storing it — an unverified URL would be a broken image pinned for the whole 30-day TTL, and would count as content in `_has_content`, flagging an otherwise empty book as found. And the chain runs *only on the gap*: a book Google Books already gave a thumbnail for makes zero extra requests.
 
@@ -150,19 +150,23 @@ The cover is the better authority, and vision already read it. When the scanned 
 
 **This is a correctness invariant, not a ranking preference.** A summary of *Dune* built partly from *Foundation*'s reception passages would be fluent, plausible, and wrong — and, because every claim would still carry a real citation, wrong in a way that *looks verified*. Nothing downstream can detect it. The prompt certainly can't: the model has no way to know a passage it was handed belongs to a different book.
 
-The trap is that ChromaDB fails **silently** in exactly the directions that matter:
+History: the chunks used to live in ChromaDB, which failed **silently** in exactly the directions that matter (`where=None` / `where={}` returned the whole collection, a misspelled metadata key matched nothing, a `str` `book_id` filtered as `int` matched nothing — none of them raised). Since cloud step 3 they are rows in `book_chunks` (PostgreSQL + pgvector), and the same risks have SQL spellings: **a refactor that drops the `WHERE`** (the query still succeeds and ranks the whole corpus), and **an ANN index** (see below). The constraint is therefore enforced in four independent ways in code, plus one by the database:
 
-| What goes wrong | What Chroma does | What you'd see |
-|---|---|---|
-| `where=None` or `where={}` | returns the whole collection, unfiltered | plausible summaries mixing books |
-| misspelled metadata key | matches nothing | every book silently has "no sources" |
-| `book_id` stored as `str`, filtered as `int` | matches nothing (exact type match) | same, and only for books written by the older code path |
+1. `book_id` is a **required positional parameter** of `VectorStore.query` (no default, no overload without it).
+2. The `WHERE book_chunks.book_id = :book_id` is **built inside `services/vector_store.py`** from that parameter alone — callers pass no filters and no `select`.
+3. **Every returned row is re-checked** against the requested book, raising `CorpusLeak` on a mismatch.
+4. **Only `vector_store.py` (and the models package) may reference the `BookChunk` model** — `tests/test_vector_store.py` scans `app/` and fails otherwise, so nobody can write a second, unfiltered chunk query next to the guarded one. A second scan (AST) fails on any non-docstring string naming the `book_chunks` table outside the store and its model, which catches the bypasses the model check cannot see: `text("... FROM book_chunks")`, `table("book_chunks")`, `metadata.tables["book_chunks"]`.
+5. **Foreign keys:** `book_chunks.book_id` → `books` and `book_chunks.text_source_id` → `text_sources`, both `ON DELETE CASCADE`. A chunk of a book that doesn't exist, or of a source row that was replaced, cannot persist. This is also what fixed a latent bug: a Module 4 refresh replaces a book's `TextSource` rows (delete-orphan), but the old Chroma chunks survived, so `count_for_book` stayed above zero, the next summary never re-ingested, and retrieval cited passages whose sources were gone. Now the refresh deletes its chunks in the same transaction and the next summary rebuilds the corpus.
 
-None of these raise. So `services/vector_store.py` enforces the constraint three independent ways: `book_id` is a **required positional parameter** of `query` (no default, no overload without it); the `where` clause is **built inside that module** from that parameter alone, so callers never pass raw filters and a typo can't reach Chroma from elsewhere; and **every returned row is re-checked** against the requested book, raising `CorpusLeak` on a mismatch. `Chunk.metadata()` pins `book_id` to `int` for the same reason, and chunk ids encode it (`b{book_id}:s{source_id}:{index}`) so a chunk is traceable to its book without a second lookup.
+**There is deliberately no HNSW/IVFFlat index on `book_chunks.embedding`.** pgvector applies a `WHERE` *after* the approximate scan: an HNSW index yields its nearest ~40 candidates across *all* books and only then filters them, so a small book surrounded by other books' nearer chunks silently returns fewer rows than it has — or none, which reads as "this book has no passages". Instead there is a b-tree on `book_id` and an exact distance sort over that one book's ~10-60 chunks: correct by construction and fast. `book_profiles` is queried across books but holds hundreds to low thousands of rows, so it is an exact scan too. If either ever outgrows that, add HNSW *together with* `hnsw.iterative_scan` and keep `test_a_small_book_among_many_far_away_ones_still_returns_all_its_chunks` and `test_vector_tables_exist_and_have_no_approximate_index` honest — they exist to fail when someone adds an index without thinking about this.
 
-The isolation tests run against a **real ephemeral ChromaDB, not a fake** — a fake would only prove our filter-passing code calls itself correctly, when the whole risk is that Chroma's filter doesn't behave as assumed. The fixture corpus deliberately holds a plausible near-miss (*Foundation* alongside *Dune*: same genre, same era, same shape of award-winning reception), because a filter is only worth testing against a corpus that would genuinely rank against it.
+**The stores run on the caller's session and never commit** (`PgVectorStore`, `PgProfileStore`: every Protocol method takes `db: AsyncSession` first). A store with a session of its own would not see rows the caller has written but not committed (e.g. a just-persisted candidate `Book`), and with the foreign key Postgres would make its insert wait on the caller's open transaction — the same coroutine, so a hang. The callers commit where it matters: `RagService.summarize` right after ingesting (so a failed model call doesn't throw the embedding work away) and `RecommendationService._ensure_profiles` after writing vectors.
 
-One collection for the whole corpus, partitioned by this filter — not a collection per book. Chroma holds an HNSW index per collection, and thousands of tiny indexes cost far more memory than one, which matters on a 7.4 GB laptop.
+The isolation tests run against the **real PostgreSQL + pgvector, not a fake** — a fake would only prove our filter-passing code calls itself correctly, when the risks are in the database's behaviour. The fixture corpus deliberately holds a plausible near-miss (*Foundation* alongside *Dune*: same genre, same era, same shape of award-winning reception), because a filter is only worth testing against a corpus that would genuinely rank against it.
+
+One table for the whole corpus, partitioned by this filter — not a table per book.
+
+**Azure note (step 7):** Flexible Server only allows `CREATE EXTENSION vector` once `VECTOR` is in the `azure.extensions` server parameter (the allow-list); migration `0002_pgvector` runs `CREATE EXTENSION IF NOT EXISTS vector` first and fails without it.
 
 ### Schema changes go through Alembic (supersedes `init_db`'s column reconciliation)
 
@@ -178,13 +182,13 @@ the answer for anything else. It now is: see the next decision.
 
 **The backend runs as two containers, `api` and `ollama`, and no application code changed to make that happen.** The point is that a cloud platform runs images, not a venv on a laptop; if it runs under `docker compose` here, later steps only change where data lives, not how the app starts. Both images run as non-root users.
 
-**`backend/Dockerfile` installs from `backend/requirements.lock`, not from `pyproject.toml`'s ranges.** The ranges re-resolve on every fresh build, so the first container build silently got newer libraries than the venv the suite had been passing on (`chromadb` 0.6 vs 0.5, `numpy` 2.x). The lock is copied alone before the install, so the ~770 MB dependency layer is cached until the lock itself changes. Its header holds the regenerate command. A `test` stage (`docker build --target test -t glance-api-test backend && docker run --rm glance-api-test`) runs the suite **inside Linux on exactly those versions** — the laptop is Windows, the cloud is not — and is never part of the shipped image.
+**`backend/Dockerfile` installs from `backend/requirements.lock`, not from `pyproject.toml`'s ranges.** The ranges re-resolve on every fresh build, so the first container build silently got newer libraries than the venv the suite had been passing on (`chromadb` 0.6 vs 0.5, `numpy` 2.x). The lock is copied alone before the install, so the ~770 MB dependency layer is cached until the lock itself changes. Its header holds the regenerate command. A `test` stage (`docker compose --profile test run --rm test`, which also starts `postgres` and points `TEST_DATABASE_URL` at its `glance_test` database) runs the suite **inside Linux on exactly those versions** — the laptop is Windows, the cloud is not — and is never part of the shipped image.
 
 **OpenCV is swapped for `opencv-python-headless` at the same version, inside the build.** `rapidocr-onnxruntime` depends on the GUI build, which links libGL, X11 and Qt and needed ~220 MB of system packages; a server never opens a window, and both builds install the same `cv2` module. The lock therefore names `opencv-python`, and the swap happens after the install — which is why the regenerate command rewrites `-headless` back.
 
-**`app/` is copied once, into `/app`, and never `pip install`ed.** An installed second copy in site-packages would win whenever the process starts outside `/app`, moving `BACKEND_DIR` and with it the database off the volume. Compose sets `DATABASE_URL` / `CHROMA_PERSIST_DIR` explicitly for the same reason.
+**`app/` is copied once, into `/app`, and never `pip install`ed.** An installed second copy in site-packages would win whenever the process starts outside `/app`, moving `BACKEND_DIR` and with it the paths the app derives from it. Compose sets `DATABASE_URL` explicitly for the same reason.
 
-**`api` runs exactly one uvicorn worker, and that is temporary.** Chroma's `PersistentClient` and FastAPI `BackgroundTasks` both live inside the process, so a second worker would be a second process writing the same Chroma files and running its own job queue. The limit is lifted when vectors move to pgvector and jobs to a queue/worker, not before.
+**`api` runs exactly one uvicorn worker, and that is temporary.** FastAPI `BackgroundTasks` still ties the scan jobs to the process, so a second worker would be a second job runner with its own in-flight tasks. (Vectors are no longer a reason: since step 3 they live in Postgres.) The limit is lifted when jobs move to a queue/worker (step 4), not before.
 
 **`nomic-embed-text` is baked into the `ollama` image at build time, pinned to `v1.5`.** Containers are restarted freely in the cloud; if the model were pulled on first start, every fresh container would spend its first minutes downloading ~275 MB while `api` waited on it. It is pinned because a moved `latest` tag would make new vectors stop matching the ones already stored; the build aliases `v1.5` to `nomic-embed-text:latest` so `Settings.ollama_embedding_model` needs no change. The pull runs under `set -e` and the build asserts the model exists, so a network blip fails the build instead of shipping an image with no model.
 
@@ -192,21 +196,21 @@ the answer for anything else. It now is: see the next decision.
 
 **`ollama` publishes no port.** Only `api` needs it, and it reaches it by service name on the compose network (`OLLAMA_HOST=http://ollama:11434`). This mirrors an internal-ingress service in the cloud and keeps an unauthenticated model server off the host's network. A native Ollama on the host's 11434 does not conflict for that reason.
 
-**`.env` is injected at run time (`env_file`), never baked into an image.** `.dockerignore` excludes it, so `docker build` cannot copy secrets into a layer. A secret store takes over this role in the cloud. The database and Chroma live on the named volume `glance-data` mounted at `/app/data`, which is where `config.py` already points.
+**`.env` is injected at run time (`env_file`), never baked into an image.** `.dockerignore` excludes it, so `docker build` cannot copy secrets into a layer. A secret store takes over this role in the cloud. The api container keeps no state on its own disk: the database (relational data and vectors) lives in the `postgres` service's volume `glance-pg`.
 
 ### PostgreSQL + Alembic (cloud step 2)
 
-**Why.** SQLite is a library inside the api process writing a file on its disk. In the cloud that breaks three ways: container disks are throwaway (a restart loses every account and library); a file belongs to one machine, so the separate worker (step 4) and extra api replicas cannot share it, and SQLite over a network share (Azure Files/SMB) corrupts under concurrent writes; and `init_db` could only add columns. Postgres is a server many containers connect to: a `postgres` compose service locally (`pgvector/pgvector:pg17`, so step 3 needs no image swap), Postgres Flexible Server in Azure.
+**Why.** The previous store, SQLite, was a library inside the api process writing a file on its disk. In the cloud that breaks three ways: container disks are throwaway (a restart loses every account and library); a file belongs to one machine, so the separate worker (step 4) and extra api replicas cannot share it, and SQLite over a network share (Azure Files/SMB) corrupts under concurrent writes; and `init_db` could only add columns. Postgres is a server many containers connect to: a `postgres` compose service locally (`pgvector/pgvector:pg17`), Postgres Flexible Server in Azure.
 
 **Migrations run as a one-shot `migrate` service, not at api startup.** With several replicas each would try to migrate at the same moment. Same image as `api`, command `alembic upgrade head`; in step 8 it becomes a Container Apps Job. `api` depends on `migrate: service_completed_successfully`. At startup `init_db` only *checks* that the database is at the head revision and otherwise logs `schema_revision_mismatch` (saying whether the database is behind, or *ahead* after a rollback to an older image) and raises `SchemaOutOfDate`, so a stale schema stops the api instead of failing obscurely later.
 
 **The drift test replaces the old safety net.** `tests/test_migrations.py` runs `alembic upgrade head` on an empty database and asserts Alembic's `compare_metadata` finds no difference from the models: the bug class (model changed, no migration) the suite could never see before. It also checks upgrade, downgrade, upgrade. After changing a model: `alembic revision --autogenerate -m "..."`, then review the script by hand.
 
-**`Text`, not `String(n)`, for external free text.** SQLite ignores VARCHAR lengths; Postgres enforces them, so a long Wikipedia URL or title that scans fine on SQLite would crash the scan. `title`, `author`, `normalized_key`, `cover_url`, `heading`, `url` and `seed` are `Text`; fields with a natural bound (email, token hash, status, ISBNs, source/kind/licence) stay bounded. Likewise the Boolean server default is `sa.false()`, not `text("0")`, which Postgres rejects.
+**`Text`, not `String(n)`, for external free text.** A bounded VARCHAR is enforced by Postgres, so a long Wikipedia URL or title would crash the scan. `title`, `author`, `normalized_key`, `cover_url`, `heading`, `url` and `seed` are `Text`; fields with a natural bound (email, token hash, status, ISBNs, source/kind/licence) stay bounded. Likewise the Boolean server default is `sa.false()`, not `text("0")`, which Postgres rejects.
 
-**Hazard: book ids vs Chroma.** A fresh Postgres restarts ids at 1 while Chroma still holds chunks for the *old* book 1, 2, 3, so the new book 1 retrieves the old book 1's passages. The `CorpusLeak` re-check cannot catch it, because the id matches. Switching databases therefore means wiping the corpus too: `docker compose down -v` removes both volumes together (dev data only). This disappears structurally in step 3, when chunks get a foreign key to `books` in the same database.
+**Hazard (resolved in step 3): book ids vs the old vector store.** A fresh Postgres restarts ids at 1 while the file-based Chroma store still held chunks for the *old* book 1, 2, 3, so the new book 1 retrieved the old book 1's passages, and the `CorpusLeak` re-check could not catch it because the id matched. Since step 3 chunks are rows in the same database with a foreign key to `books`, so the hazard is gone structurally.
 
-**SQLite is still supported** (the config default) for native development and the fast suite. A native `data/glance.db` that predates Alembic needs `alembic stamp head` once — **but only after the previous version has opened it**, since its column reconciliation is what brought the file up to the baseline. Stamping an older file makes the startup check report "up to date" over a missing column, the original bug; when in doubt, delete it and `alembic upgrade head`. `TEST_DATABASE_URL=postgresql+asyncpg://...` runs the whole suite (and the migration tests) on Postgres instead of in-memory SQLite.
+**SQLite support ended in step 3.** pgvector has no SQLite equivalent, and the isolation tests must run against the real store, so Postgres is required everywhere, including `pytest`: `docker compose up -d postgres` first. `aiosqlite` is no longer a dependency, and `Settings.database_url` defaults to the compose dev database (`postgresql+asyncpg://glance:glance@127.0.0.1:5433/glance`). The suite fails at once, with that instruction, if the database is unreachable — it never skips. The schema is built once per session and every test starts with `TRUNCATE ... RESTART IDENTITY CASCADE`; `tests/test_migrations.py` uses a throwaway database per test so it can start from an unmigrated one.
 
 ### Dual-purpose embeddings
 
@@ -232,13 +236,13 @@ The vectors generated when a book is ingested serve both RAG (Module 5) and reco
 | API framework | `fastapi` + `uvicorn` | async by default |
 | Validation / schemas | `pydantic` v2 | all request/response bodies as `BaseModel` |
 | Config & secrets | `pydantic-settings` + `python-dotenv` | reads from `.env`, never hardcoded |
-| ORM | `sqlalchemy` 2.0 async + `asyncpg` (Postgres) / `aiosqlite` (native dev) | schema changes via `alembic` migrations |
+| ORM | `sqlalchemy` 2.0 async + `asyncpg` (PostgreSQL) | schema changes via `alembic` migrations |
 | Auth | `python-jose[cryptography]` (JWT) + `bcrypt` directly | **not** `passlib` — 1.7.4 breaks with `bcrypt>=4.1`. Clean alternative: `pwdlib[argon2]` |
 | OCR | `rapidocr-onnxruntime` | ONNX, no torch |
 | Image processing | `pillow` | EXIF rotation, resize, recompression |
 | Vision / LLM (default) | `groq` (Python client) | cloud — `GROQ_API_KEY` in `.env` |
 | Vision / LLM (local fallback) | `ollama` (Python client) | local, `ai_provider="ollama"` |
-| Vector DB | `chromadb` (persistent client) | `./data/chroma` folder, local |
+| Vector DB | `pgvector` (extension in our PostgreSQL; `pgvector.sqlalchemy.Vector(768)`) | `book_chunks` + `book_profiles` tables, exact cosine search, no ANN index |
 | Embeddings | `nomic-embed-text` via Ollama | 768-dim, always local |
 | HTTP client | `httpx` (async) | retry + backoff |
 | Fuzzy matching | `rapidfuzz` | title/author normalization |
@@ -267,7 +271,7 @@ backend/
 │   │       └── users.py            # profile, history, preferences, recommendations
 │   ├── models/                     # SQLAlchemy: User, RefreshToken, Job, Book,
 │   │                               #   TextSource, LibraryEntry, JournalEntry,
-│   │                               #   RecommendationState
+│   │                               #   RecommendationState, BookChunk + BookProfileRow (vector.py)
 │   ├── schemas/                    # Pydantic (request/response)
 │   ├── services/
 │   │   ├── ocr_service.py          # RapidOCR + image preprocessing
@@ -284,7 +288,7 @@ backend/
 │   │   ├── data_fetcher.py         # source orchestration + normalization + cache
 │   │   ├── chunking.py             # passages → ~500-token, sentence-aligned chunks
 │   │   ├── embeddings.py           # nomic-embed-text via Ollama — always local
-│   │   ├── vector_store.py         # `book_chunks` + the mandatory book_id filter
+│   │   ├── vector_store.py         # `book_chunks` (pgvector) + the mandatory book_id filter
 │   │   ├── profile_store.py        # `book_profiles` — one vector per book, queried across books
 │   │   ├── rag_service.py          # ingest, retrieve, synthesize, verify citations
 │   │   ├── library_service.py      # history, status, ratings, derived preferences
@@ -296,17 +300,16 @@ backend/
 │       ├── session.py
 │       └── init_db.py              # startup check: DB at Alembic head, else refuse to start
 ├── alembic.ini                     # URL comes from Settings, never from here
-├── migrations/                     # env.py (async), versions/0001_baseline.py, ...
+├── migrations/                     # env.py (async), versions/0001_baseline.py, 0002_pgvector.py, ...
 ├── tests/
 │   ├── conftest.py
 │   └── fixtures/                   # test covers, mocked HTTP responses
 ├── docs/
 │   └── module-N-name.md            # summary written at the end of each module
-├── data/                           # SQLite + Chroma (in .gitignore)
 ├── .env.example
 ├── Dockerfile                      # the `api` image (multi-stage, non-root, one uvicorn worker, `test` stage)
 ├── requirements.lock               # exact runtime versions the image installs (regenerate: see its header)
-├── .dockerignore                   # keeps .env, .venv, data/, docs/ out of the build context
+├── .dockerignore                   # keeps .env, .venv, docs/ out of the build context
 ├── pyproject.toml
 └── CLAUDE.md
 ```
@@ -314,7 +317,7 @@ backend/
 Repo root, next to `backend/` and `frontend/`:
 
 ```
-docker-compose.yml                  # runs `postgres`, one-shot `migrate`, `api`, `ollama`, like the future cloud layout
+docker-compose.yml                  # runs `postgres`, one-shot `migrate`, `api`, `ollama` (+ `test`, profile `test`), like the future cloud layout
 postgres/
 └── init/01-create-test-db.sql      # creates `glance_test` for host-side pytest
 ollama/
@@ -340,7 +343,7 @@ One module per session. Don't move on until the tests pass.
       **An empty result gets a short TTL** (`empty_book_cache_ttl_hours`, 6 h) instead of the full 30 days. Emptiness is rarely durable — a bare record gets filled in, a degraded source recovers — and pinning it for a month made the gap permanent from the user's side, because rescanning just re-served the empty row.
       **A book with no cover now falls back to Open Library by ISBN, then to Wikipedia's article image.** See the "Cover images" decision above — step 3 rests on this build being private, and is switched off by `WIKIPEDIA_COVER_FALLBACK=false`.
       **Catalog title matching uses `token_sort_ratio`, never `token_set_ratio`.** The latter scores on the token *intersection*, so any candidate containing the query scores 100: Open Library really did return *Heretics of Dune* as the match for "Dune", and its cover, blurb and subjects were merged into Dune's entry and stored as Dune's RAG passages. `services/sources/matching.py` compares title *variants* (as-is, parentheticals stripped, subtitle dropped) so a real edition still matches while a sibling in the series doesn't. Note `vision_service.py` still uses `token_set_ratio` deliberately — it scores noisy multi-line OCR against a candidate list, a different job with its own tuning.
-- [x] **Module 5: RAG** — *(backend + client, both done)* chunking (~500 tokens, overlap 50, sentence-aligned), local embeddings via `nomic-embed-text`, persistent Chroma, **retrieval mandatorily filtered on `book_id`** (see the decision below), synthesis with `openai/gpt-oss-120b` on Groq + per-claim source citations, anti-hallucination prompt *and* citation verification. `GET /books/{book_id}/summary`. On the client: the summary section fetches itself, each sentence is tappable to the passage it came from, and the publisher's blurb stays as a clearly-labelled fallback.
+- [x] **Module 5: RAG** — *(backend + client, both done)* chunking (~500 tokens, overlap 50, sentence-aligned), local embeddings via `nomic-embed-text`, vectors in PostgreSQL (pgvector since cloud step 3; Chroma before), **retrieval mandatorily filtered on `book_id`** (see the decision below), synthesis with `openai/gpt-oss-120b` on Groq + per-claim source citations, anti-hallucination prompt *and* citation verification. `GET /books/{book_id}/summary`. On the client: the summary section fetches itself, each sentence is tappable to the passage it came from, and the publisher's blurb stays as a clearly-labelled fallback.
       *Done when:* on a fixture corpus, every statement in the summary is traceable to a chunk. **Done** — 221 tests green, `mypy app/` clean, `ruff`/`black` clean, `tsc --noEmit` clean, `expo export` bundles. See `backend/docs/module-5-rag.md` (local, gitignored).
       **The summary is not part of the scan job.** It hangs off the *book*, not the scan, and is generated on demand by its own endpoint. Three reasons: it is seconds slower than the catalog metadata and would otherwise hold the whole result screen back; it is shared by everyone who scans the same book; and a correction needs no special handling for it, because the corrected title resolves to a different `book_id` and the client simply asks for that book's summary. `job.result` therefore has **no `summary` key** at all — a field that is always `null` is a trap.
       **The summary *is* its claims.** The model returns a list of `{text, chunk_ids}` and the prose is derived server-side by joining them, rather than returning prose with `[1]` markers the client would have to parse back apart. The two cannot disagree, and "every sentence cites something" becomes checkable instead of hoped-for.
@@ -359,8 +362,8 @@ One module per session. Don't move on until the tests pass.
       **A correction removes the misidentified book from the library** — but only when it is an untouched scan artifact (no rating, no journal note, still `SCANNED`). Once the user has said something about it, it is theirs and it stays.
 - [x] **Module 6b: Recommendations** — *(backend + client, both done)* profile vector (rating-weighted average over entries rated ≥4), candidate discovery from the catalogs, filtering by the whole library, score + computed explanation ("because you liked X"). Purely content-based — single user, guaranteed cold start, no collaborative filtering. `GET /users/me/recommendations`. On the client: the recommendations tab runs on real data, with "Want to read" writing straight into the library.
       *Done when:* a reader who has rated nothing gets an honest empty state, and no book already in their library is ever suggested. **Done** — 325 tests green, `mypy app/` clean, `ruff`/`black` clean, `tsc --noEmit` clean, `expo export` bundles. See `backend/docs/module-6b-recommendations.md` (local, gitignored).
-      **Candidates cannot come from Chroma alone.** `book_chunks` holds only books the user has already scanned — that pool is exactly the set that must be filtered out, so the honest answer would always be zero recommendations. Cold start here is not "no ratings", it is "nothing to choose from". Candidates come from the catalog instead: Google Books / Open Library queried by the derived genres and authors, descriptions embedded locally with `nomic-embed-text`, ranked against the profile vector.
-      **Recommendations get their own Chroma collection, `book_profiles` (one vector per book).** They need a query *across* books, which is precisely what `vector_store.py`'s mandatory `book_id` filter forbids — and that filter is Module 5's central correctness invariant, not a preference. It is not weakened, flagged around, or given an exception: two collections, two rules, neither relaxed. `services/profile_store.py` is a separate module for the same reason — a cross-book query function sitting next to the mandatory-filter code would be an invitation.
+      **Candidates cannot come from the chunk table alone.** `book_chunks` holds only books the user has already scanned — that pool is exactly the set that must be filtered out, so the honest answer would always be zero recommendations. Cold start here is not "no ratings", it is "nothing to choose from". Candidates come from the catalog instead: Google Books / Open Library queried by the derived genres and authors, descriptions embedded locally with `nomic-embed-text`, ranked against the profile vector.
+      **Recommendations get their own table, `book_profiles` (one vector per book; a Chroma collection until cloud step 3).** They need a query *across* books, which is precisely what `vector_store.py`'s mandatory `book_id` filter forbids — and that filter is Module 5's central correctness invariant, not a preference. It is not weakened, flagged around, or given an exception: two tables, two rules, neither relaxed. `services/profile_store.py` is a separate module for the same reason — a cross-book query function sitting next to the mandatory-filter code would be an invitation.
       **Discovery is a different question from lookup, so it is a different Protocol.** `ContentSource.fetch` resolves one known title and merges everything about it; `CandidateSource.discover` asks an open question and expects many partial answers. Both catalogs implement both, but folding them together would give `fetch` a plural return type it has no use for, and would let a discovery result reach the Module 4 merge — where "first non-`None` wins" assumes every result describes the *same book*.
       **A discovered candidate is persisted as an ordinary `Book` row with `sources_fetched_at = None`.** That gives it a stable id the client can act on, lets its vector be cached instead of recomputed per request, and makes "Want to read" the existing library write rather than a second path. The null timestamp is what keeps it honest: `_is_fresh` reads exactly that field, so scanning the book later runs the real Module 4 fetch instead of serving a search hit as a settled lookup. An existing row is **never** overwritten by a candidate — it may carry gathered passages, a summary and a recovered cover that a bare search hit would flatten.
       **The candidate pool is global; only the filtering is per user.** Two readers who like the same genre rank against the same rows. What is private is the profile vector, the exclusions and the ranking, all computed per request. The only per-user state is `RecommendationState` — `refreshed_at` plus a fingerprint of the derived preferences, because a TTL alone would serve yesterday's pool for a day after the reader first rates a book in a new genre, which is the exact moment their suggestions should change most.
@@ -387,20 +390,20 @@ The two parts progress **module by module, in parallel** — not backend-complet
 ## Useful commands
 
 ```bash
-uvicorn app.main:app --reload      # start the dev server
-pytest                             # run the tests
+docker compose up -d postgres      # (repo root) the database; REQUIRED before uvicorn, alembic and pytest
+uvicorn app.main:app --reload      # start the dev server (after `alembic upgrade head`)
+pytest                             # run the tests (Postgres must be up; fails fast otherwise)
 pytest -m "not slow"               # skip tests that call Ollama
 black . && ruff check .            # formatting + lint
 mypy app/                          # type checking
 alembic upgrade head               # apply migrations (native dev; compose does it via `migrate`)
 alembic revision --autogenerate -m "..."   # new migration after a model change; review it
-TEST_DATABASE_URL=postgresql+asyncpg://glance:glance@127.0.0.1:5433/glance_test pytest -m "not slow"
-                                   # whole suite on compose's Postgres (docker compose up -d postgres;
-                                   # `glance_test` is created only on a fresh volume, else `createdb` it);
+                                   # tests use the `glance_test` database (TEST_DATABASE_URL overrides);
+                                   # it is created only on a fresh volume, else `createdb` it;
                                    # 127.0.0.1, not localhost: on Windows localhost tries ::1 first, +2 s per connection
 docker compose up --build          # (repo root) run postgres, migrate, api, ollama; needs backend/.env
-docker build --target test -t glance-api-test backend && docker run --rm glance-api-test
-                                   # the suite inside Linux, on the locked versions
+docker compose --profile test run --rm test
+                                   # (repo root) the suite inside Linux, on the locked versions
 ```
 
 ## Code conventions
@@ -418,7 +421,7 @@ docker build --target test -t glance-api-test backend && docker run --rm glance-
 
 The project is **hybrid**: storage and embeddings stay ours; vision and LLM generation default to Groq Cloud. This is a deliberate pivot from the original all-local design — see "Architecture pivot: local vision/LLM → Groq Cloud" above for the reasoning (local model accuracy on this hardware was not good enough, and CPU inference was too slow).
 
-- **Storage, cache, and embeddings stay under our control** — Postgres we run (compose locally / Flexible Server in Azure; SQLite natively), ChromaDB until step 3, and `nomic-embed-text` via our own Ollama. No third-party data services, regardless of `ai_provider`.
+- **Storage, cache, vectors and embeddings stay under our control** — one Postgres we run (compose locally / Flexible Server in Azure) with the pgvector extension holding both the relational data and the vectors, and `nomic-embed-text` via our own Ollama. No third-party data services, regardless of `ai_provider`.
 - **Vision and LLM generation go through Groq Cloud by default** (`Settings.ai_provider = "groq"`), using `groq.AsyncGroq` with the key in `GROQ_API_KEY`. The local path (`ai_provider = "ollama"`, Moondream + Llama 3.2) must keep working as a fallback — don't let it bit-rot or get deleted.
 - **Never hardcode the provider.** Both integrations go through `Settings.ai_provider` / `Settings.vision_model` / `Settings.llm_model` in `core/config.py`, never a direct `if` on a model name scattered through the code.
 - No other cloud LLM/vision APIs (OpenAI, Anthropic API, etc.) and no Google Colab — Groq is the one deliberate exception, not a general opening.

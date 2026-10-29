@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.models.book import SourceName
+from app.models.vector import EMBEDDING_DIMENSIONS
 from app.services.ocr_service import OcrEngine, TextCandidate
 from app.services.ollama_client import OllamaClient
 from app.services.sources.base import (
@@ -201,11 +202,14 @@ class HashingEmbeddingClient:
     distance tracks lexical overlap — crude next to `nomic-embed-text`,
     but real, offline, and identical on every run.
 
+    The width matches the real model (768), because the `vector(768)` columns
+    reject any other size.
+
     Nothing here contacts Ollama, so the suite keeps its "zero network
     calls" property.
     """
 
-    def __init__(self, dimensions: int = 256) -> None:
+    def __init__(self, dimensions: int = EMBEDDING_DIMENSIONS) -> None:
         self.dimensions = dimensions
         self.calls: list[list[str]] = []
 
@@ -222,9 +226,9 @@ class HashingEmbeddingClient:
 
         norm = math.sqrt(sum(value * value for value in vector))
         if norm == 0.0:
-            # An all-zero vector has no direction, and Chroma's cosine
-            # space cannot rank it. One arbitrary non-zero component keeps
-            # empty or punctuation-only text queryable instead of erroring.
+            # An all-zero vector has no direction: pgvector's cosine distance
+            # to it is NaN, which cannot be ranked. One arbitrary non-zero
+            # component keeps empty or punctuation-only text queryable.
             vector[0] = 1.0
             return vector
         return [value / norm for value in vector]

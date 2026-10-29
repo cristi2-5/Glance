@@ -1,6 +1,6 @@
 """The `RecommendationState` model — when this reader's candidate pool was last widened.
 
-Recommendations are ranked from the `book_profiles` Chroma collection,
+Recommendations are ranked from the `book_profiles` table (pgvector),
 which is cheap: it is a vector average over books the reader liked and one
 similarity search. What is *not* cheap is **discovery** — asking Google
 Books and Open Library for books in this reader's favourite genres and by

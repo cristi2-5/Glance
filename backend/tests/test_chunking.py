@@ -131,23 +131,23 @@ def test_empty_and_whitespace_passages_produce_nothing() -> None:
     assert chunk_text_sources(1, []) == []
 
 
-def test_metadata_pins_book_id_as_an_integer() -> None:
-    """`book_id` must be an int in Chroma metadata.
+def test_chunks_carry_book_id_as_an_integer() -> None:
+    """`book_id` is an int on every chunk.
 
-    Chroma matches metadata by exact type, so a chunk written with a
-    string `book_id` would be invisible to the int filter — silently, with
-    no error and no results.
+    The store writes it straight into the integer `book_chunks.book_id`
+    column and compares it as an int in the leak guard; a stray string
+    would fail the insert or, worse, make that comparison always unequal.
     """
     book = assign_fake_ids(build_dune(), book_id=42)
 
-    chunk = chunk_text_sources(42, list(book.text_sources))[0]
+    chunks = chunk_text_sources(42, list(book.text_sources))
 
-    assert chunk.metadata()["book_id"] == 42
-    assert isinstance(chunk.metadata()["book_id"], int)
+    assert chunks
+    assert all(isinstance(chunk.book_id, int) and chunk.book_id == 42 for chunk in chunks)
 
 
-def test_metadata_has_no_none_values() -> None:
-    """Chroma rejects `None` metadata; optional fields collapse to "" instead."""
+def test_chunks_keep_absent_provenance_as_none() -> None:
+    """Optional provenance stays `None`; the nullable columns store it as NULL."""
     passage = _passage("A sentence.")
     passage.heading = None
     passage.url = None
@@ -155,7 +155,7 @@ def test_metadata_has_no_none_values() -> None:
 
     chunk = chunk_text_sources(1, [passage])[0]
 
-    assert all(value is not None for value in chunk.metadata().values())
+    assert (chunk.heading, chunk.url, chunk.license) == (None, None, None)
 
 
 @pytest.mark.parametrize(

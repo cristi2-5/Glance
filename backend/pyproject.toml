@@ -1,7 +1,7 @@
 [project]
 name = "glance-backend"
 version = "0.1.0"
-description = "Glance — local backend for book cover recognition, RAG and recommendations"
+description = "Glance — backend for book cover recognition, RAG and recommendations"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "fastapi>=0.115,<1.0",
@@ -10,7 +10,6 @@ dependencies = [
     "pydantic-settings>=2.6,<3.0",
     "python-dotenv>=1.0,<2.0",
     "sqlalchemy[asyncio]>=2.0,<3.0",
-    "aiosqlite>=0.20,<1.0",
     "python-jose[cryptography]>=3.3,<4.0",
     "bcrypt>=4.1,<5.0",
     "email-validator>=2.2,<3.0",
@@ -18,13 +17,13 @@ dependencies = [
     "pillow>=10.4,<11.0",
     "ollama>=0.3,<1.0",
     "groq>=1.6,<2.0",
-    "chromadb>=0.5,<1.0",
     "httpx>=0.27,<1.0",
     "rapidfuzz>=3.10,<4.0",
     "structlog>=24.4,<25.0",
     "python-multipart>=0.0.12,<1.0",
     "asyncpg>=0.30,<1.0",
     "alembic>=1.14,<2.0",
+    "pgvector>=0.3,<1.0",
 ]
 
 [project.optional-dependencies]

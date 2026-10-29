@@ -100,9 +100,8 @@ class Book(Base):
     __tablename__ = "books"
 
     # Free text that arrives from outside (catalogs, Wikipedia, OCR) is `Text`,
-    # not `String(n)`: SQLite ignores VARCHAR lengths but PostgreSQL enforces
-    # them, so a long title or URL that scans fine on SQLite would crash the
-    # scan on Postgres. External data has no natural bound; fields that do
+    # not `String(n)`: PostgreSQL enforces VARCHAR lengths, so a long title or
+    # URL would crash the scan. External data has no natural bound; fields that do
     # (ISBNs, source/kind/licence names) stay bounded.
     id: Mapped[int] = mapped_column(primary_key=True)
     normalized_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)

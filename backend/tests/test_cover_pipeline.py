@@ -38,7 +38,7 @@ class _FakeVisionService:
 
 async def _create_pending_job(session_factory: async_sessionmaker[AsyncSession]) -> int:
     async with session_factory() as db:
-        # A real owner: SQLite ignores foreign keys, PostgreSQL enforces them.
+        # A real owner: PostgreSQL enforces the foreign key.
         user = await db.scalar(select(User).where(User.email == "pipeline@example.com"))
         if user is None:
             user = User(email="pipeline@example.com", hashed_password="x")

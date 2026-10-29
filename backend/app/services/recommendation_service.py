@@ -35,7 +35,7 @@ dropped for the rest of the run at its first unavailable answer — with
 openlibrary.org fully down, retrying every remaining seed would hold a
 synchronous request for minutes to learn nothing.
 
-**Candidates cannot come from ChromaDB's chunk collection.** It holds only
+**Candidates cannot come from the `book_chunks` table.** It holds only
 books the reader has already scanned — precisely the set that must be
 filtered out — so the honest answer from it would always be zero
 recommendations. The cold start here is not "no ratings", it is "nothing
@@ -132,7 +132,7 @@ _GENERIC_SUBJECTS = frozenset(
 # `get_profile_store`) are `lru_cache`d for the same reason.
 #
 # In-process only, which is correct for this deployment: one uvicorn
-# worker on one laptop. A second worker would need this in SQLite, and the
+# worker. A second worker would need this in the database, and the
 # `_persist_candidates` savepoint is what keeps that case *correct* rather
 # than merely rare — this guard is an efficiency measure, not the
 # integrity mechanism.
@@ -360,7 +360,7 @@ class RecommendationService:
         ]
         await self._ensure_profiles(db, [entry.book for entry in liked])
 
-        liked_vectors = await self._store.vectors_for([entry.book_id for entry in liked])
+        liked_vectors = await self._store.vectors_for(db, [entry.book_id for entry in liked])
         contributing = [entry for entry in liked if entry.book_id in liked_vectors]
         if not contributing:
             # Every liked book is catalogued too thinly to characterise.
@@ -380,7 +380,9 @@ class RecommendationService:
         # Over-fetch: the dislike exclusions and the score floor are applied
         # in Python afterwards, so asking for exactly `limit` here would
         # return fewer than `limit` whenever anything is filtered.
-        neighbours = await self._store.query(profile, n_results=limit * 4, exclude_book_ids=owned)
+        neighbours = await self._store.query(
+            db, profile, n_results=limit * 4, exclude_book_ids=owned
+        )
         if not neighbours:
             logger.info("recommendations_empty_pool", user_id=user_id, excluded=len(owned))
             return RecommendationList(recommendations=[], based_on=len(contributing))
@@ -622,7 +624,7 @@ class RecommendationService:
         keys and inserting the new ones is a check-then-act across an
         `await`. Two discovery runs that overlap both see a key as absent
         and both insert it; the loser hits
-        `UNIQUE constraint failed: books.normalized_key`. That is not
+        the unique constraint on `books.normalized_key`. That is not
         hypothetical — it crashed a real request, because every library
         write invalidates the client's recommendation query and rapid
         re-rating fired three overlapping runs.
@@ -652,13 +654,19 @@ class RecommendationService:
             await db.scalars(select(Book.normalized_key).where(Book.normalized_key.in_(keys)))
         )
 
-        created: list[Book] = []
+        # Chosen in discovery order (it decides which ones fit under the
+        # limit), inserted in key order: two overlapping runs then take the
+        # unique-index locks in the same order and cannot deadlock.
+        chosen: dict[str, BookMetadata] = {}
         for candidate, key in zip(candidates, keys, strict=True):
-            if len(created) >= limit:
+            if len(chosen) >= limit:
                 break
-            if key in known or not candidate.title:
+            if key in known or key in chosen or not candidate.title:
                 continue
-            known.add(key)
+            chosen[key] = candidate
+
+        created: list[Book] = []
+        for key, candidate in sorted(chosen.items()):
             book = Book(
                 normalized_key=key,
                 title=candidate.title,
@@ -704,7 +712,8 @@ class RecommendationService:
         synchronous endpoint on a CPU-only laptop.
 
         Args:
-            db: The current database session, for the commit.
+            db: The current database session; the vectors are written in it
+                and committed.
             books: The books to make sure have vectors.
 
         Raises:
@@ -714,7 +723,7 @@ class RecommendationService:
         if not books:
             return
 
-        existing = await self._store.vectors_for([book.id for book in books])
+        existing = await self._store.vectors_for(db, [book.id for book in books])
         profiles: list[BookProfile] = []
         for book in books:
             if book.id in existing:
@@ -731,7 +740,13 @@ class RecommendationService:
             return
 
         vectors = await self._embeddings.embed([profile.document for profile in profiles])
-        await self._store.upsert(profiles, vectors)
+        await self._store.upsert(db, profiles, vectors)
+        # The store joins this transaction and never commits (see
+        # `profile_store.py`). The previous store persisted on its own, so nothing
+        # here ever had to: without this commit the vectors written on the
+        # `recommend` path (the reader's liked books) would roll back when
+        # the request's session closed, and be re-embedded on every request.
+        await db.commit()
 
 
 def _collect_candidate(candidates: dict[str, BookMetadata], candidate: BookMetadata) -> None:
@@ -1009,7 +1024,7 @@ def _shared_category(candidate: Book, source: Book) -> str | None:
 def _weighted_average(vectors: list[list[float]], weights: list[float]) -> list[float]:
     """Averages vectors by weight and normalizes the result to unit length.
 
-    Normalizing matters: Chroma's cosine space compares direction, and an
+    Normalizing matters: cosine distance compares direction, and an
     un-normalized average would still *work* but would make the profile's
     magnitude depend on how many books the reader has rated — which is
     exactly the quantity that must not affect what gets recommended.
@@ -1030,7 +1045,7 @@ def _weighted_average(vectors: list[list[float]], weights: list[float]) -> list[
     norm = math.sqrt(sum(value * value for value in total))
     if norm == 0.0:
         # No direction to rank by. Cannot happen with real embeddings, but
-        # a zero vector would make Chroma return an arbitrary ordering
+        # a zero vector makes pgvector's cosine distance NaN (arbitrary ordering)
         # presented as similarity, so it is given one arbitrary component
         # explicitly rather than silently.
         total[0] = 1.0
@@ -1061,7 +1076,7 @@ async def _load_books(db: AsyncSession, book_ids: list[int]) -> dict[int, Book]:
     """Loads the `Book` rows behind a set of ranked ids.
 
     The vector store holds only ids: every field the client renders — title,
-    author, cover, categories, rating — is read from SQLite, so there is one
+    author, cover, categories, rating — is read from the `books` table, so there is one
     place a book's details can be wrong rather than two that can disagree.
 
     Args:
@@ -1081,8 +1096,8 @@ def build_recommendation_service() -> RecommendationService:
     """Factory for the production `RecommendationService`.
 
     Returns:
-        A service embedding locally through Ollama, ranking in the local
-        `book_profiles` Chroma collection, and discovering candidates in
+        A service embedding locally through Ollama, ranking in the
+        `book_profiles` table (pgvector), and discovering candidates in
         the two catalogs. Wikipedia is not a candidate source: it answers
         "what is said about this book", not "what other books are like it".
     """

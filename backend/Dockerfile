@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Glance API image. Multi-stage: the builder installs dependencies, the runtime
 # stage only carries the finished virtualenv (smaller, fewer tools for an
-# attacker to use). A `test` stage (not used by compose) runs the suite on the
+# attacker to use). A `test` stage (the compose `test` service) runs the suite on the
 # exact locked versions.
 
 # ---------- builder ----------
@@ -24,7 +24,7 @@ RUN pip install -r requirements.lock \
     && pip install --no-deps "opencv-python-headless==$VERSION" \
     && python -c "import cv2, rapidocr_onnxruntime; print(cv2.__version__)"
 
-# ---------- test (not used by compose) ----------
+# ---------- test (compose `test` service; never shipped) ----------
 FROM builder AS test
 RUN pip install "pytest>=8.3,<9.0" "pytest-asyncio>=0.24,<1.0" "respx>=0.21,<1.0"
 WORKDIR /app
@@ -45,14 +45,13 @@ RUN apt-get update \
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    ANONYMIZED_TELEMETRY=False \
     PATH="/opt/venv/bin:$PATH"
 
 COPY --from=builder /opt/venv /opt/venv
 
 # Do not run as root inside the container.
 RUN useradd --create-home --uid 1000 glance \
-    && mkdir -p /app/data \
+    && mkdir /app \
     && chown -R glance:glance /app
 WORKDIR /app
 COPY --chown=glance:glance app ./app
@@ -67,10 +66,10 @@ EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=4).status == 200 else 1)"
 
-# ONE worker on purpose: Chroma's PersistentClient and FastAPI BackgroundTasks
-# both live inside the process, so a second worker would be a second process
-# writing the same Chroma files and running its own job queue. This limit is
-# temporary: it is lifted when vectors move to pgvector and jobs to a queue/worker.
+# ONE worker on purpose: FastAPI BackgroundTasks still ties the scan jobs to
+# this process, so a second worker would be a second job runner with its own
+# in-flight tasks. (Vectors are no longer the reason: they live in Postgres.)
+# This limit is lifted when jobs move to a queue/worker (step 4).
 # --proxy-headers: Azure Container Apps terminates HTTPS in front of the
 # container; this makes uvicorn trust X-Forwarded-* so scheme/client IP are right.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]

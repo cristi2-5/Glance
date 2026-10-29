@@ -7,9 +7,12 @@ from app.models.library import LibraryEntry, ReadingStatus
 from app.models.recommendation import RecommendationState
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
+from app.models.vector import BookChunk, BookProfileRow
 
 __all__ = [
     "Book",
+    "BookChunk",
+    "BookProfileRow",
     "Job",
     "JobStatus",
     "JournalEntry",

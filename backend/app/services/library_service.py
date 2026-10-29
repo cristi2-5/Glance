@@ -431,7 +431,7 @@ async def compute_stats(db: AsyncSession, user_id: int) -> LibraryStats:
     )
     row = (await db.execute(statement)).one()
     # SQLAlchemy 2.1 types the columns of this mixed select as `object`. The
-    # counts are ints; `avg` is a `Decimal` on Postgres and a float on SQLite.
+    # counts are ints; `avg` is a `Decimal` on Postgres.
     scanned, read, rated, average, notes = cast(
         tuple[int | None, int | None, int | None, Decimal | float | None, int | None],
         tuple(row),

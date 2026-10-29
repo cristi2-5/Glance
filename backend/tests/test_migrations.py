@@ -11,27 +11,31 @@ The tests are synchronous on purpose: `alembic.command.upgrade` runs an
 async `env.py` through `asyncio.run`, which cannot be called from inside an
 already-running event loop (i.e. from an async pytest test).
 
-They run on a temporary SQLite file always, and additionally on the server
-named by `TEST_DATABASE_URL` when it is set.
+Each test gets a brand-new, empty PostgreSQL database of its own (created
+on the test server and dropped afterwards). It must be separate from the
+`glance_test` database the rest of the suite shares, because these tests
+need an *unmigrated* database and the migrations create the `vector`
+extension themselves - that is exactly what 0002 must prove it can do.
 """
 
 import asyncio
-import os
-from collections.abc import Awaitable
-from pathlib import Path
+import re
+import uuid
+from collections.abc import Awaitable, Iterator
 from typing import Any, TypeVar
 
 import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import Connection, inspect, text
+from sqlalchemy import Connection, inspect, make_url, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.exceptions import SchemaOutOfDate
 from app.db.init_db import alembic_config, init_db
 from app.db.session import Base
+from tests.conftest import _test_database_url
 
 T = TypeVar("T")
 
@@ -43,25 +47,29 @@ def _run(awaitable: Awaitable[T]) -> T:
     return asyncio.run(_wrap())
 
 
-@pytest.fixture(params=["sqlite", "postgres"])
-def database_url(request: pytest.FixtureRequest, tmp_path: Path) -> str:
-    """A URL for an empty database: a temp SQLite file, or a wiped Postgres schema."""
-    if request.param == "sqlite":
-        return f"sqlite+aiosqlite:///{tmp_path / 'migrated.db'}"
+async def _admin(statement: str) -> None:
+    """Runs `CREATE/DROP DATABASE` (which cannot run inside a transaction)."""
+    admin = create_async_engine(
+        _test_database_url(), poolclass=NullPool, isolation_level="AUTOCOMMIT"
+    )
+    try:
+        async with admin.connect() as conn:
+            await conn.execute(text(statement))
+    finally:
+        await admin.dispose()
 
-    url = os.environ.get("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL not set")
 
-    async def _wipe() -> None:
-        engine = create_async_engine(url, poolclass=NullPool)
-        async with engine.begin() as conn:
-            await conn.execute(text("DROP SCHEMA public CASCADE"))
-            await conn.execute(text("CREATE SCHEMA public"))
-        await engine.dispose()
-
-    _run(_wipe())
-    return url
+@pytest.fixture
+def database_url() -> Iterator[str]:
+    """The URL of a new empty database, dropped again after the test."""
+    name = f"glance_migrations_{uuid.uuid4().hex[:12]}"
+    _run(_admin(f'CREATE DATABASE "{name}"'))
+    try:
+        yield make_url(_test_database_url()).set(database=name).render_as_string(
+            hide_password=False
+        )
+    finally:
+        _run(_admin(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
 
 
 def _diff(url: str) -> list[Any]:
@@ -154,3 +162,40 @@ def test_startup_check_names_a_database_ahead_of_the_code(database_url: str) -> 
             _run(init_db(engine))
     finally:
         _run(engine.dispose())
+
+
+def test_vector_tables_exist_and_have_no_approximate_index(database_url: str) -> None:
+    """0002 creates the extension and tables, and adds no HNSW/IVFFlat index.
+
+    pgvector filters *after* an approximate scan, so such an index would
+    make a `book_id`-filtered chunk query silently return too few rows
+    (see `app/models/vector.py`). This keeps the choice from being undone
+    by an innocent-looking `CREATE INDEX` in a later migration.
+    """
+    command.upgrade(alembic_config(database_url), "head")
+
+    async def _inspect() -> tuple[set[str], list[str]]:
+        engine = create_async_engine(database_url, poolclass=NullPool)
+        try:
+            async with engine.connect() as conn:
+                extensions = {
+                    row[0] for row in await conn.execute(text("SELECT extname FROM pg_extension"))
+                }
+                indexes = [
+                    row[0]
+                    for row in await conn.execute(
+                        text(
+                            "SELECT indexdef FROM pg_indexes "
+                            "WHERE tablename IN ('book_chunks', 'book_profiles')"
+                        )
+                    )
+                ]
+                return extensions, indexes
+        finally:
+            await engine.dispose()
+
+    extensions, indexes = _run(_inspect())
+
+    assert "vector" in extensions
+    assert indexes, "expected at least the primary-key and book_id indexes"
+    assert not [index for index in indexes if re.search(r"hnsw|ivfflat", index, re.IGNORECASE)]

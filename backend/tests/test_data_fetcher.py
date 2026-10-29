@@ -146,7 +146,7 @@ async def test_cache_hit_returns_without_touching_any_source(db: AsyncSession) -
     second = await fetcher.fetch(db, "Dune", "Frank Herbert")
 
     assert second.id == first.id
-    assert len(google.calls) == 1, "the second fetch must be served from SQLite"
+    assert len(google.calls) == 1, "the second fetch must be served from the cache"
 
 
 async def test_cache_hit_survives_differing_case_and_accents(db: AsyncSession) -> None:
@@ -408,7 +408,7 @@ async def test_a_recovered_cover_is_cached_like_any_other(db: AsyncSession) -> N
     book = await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
     assert book.cover_url == "https://covers.test/baltagul.jpg"
 
-    # And it is served from SQLite afterwards, not re-resolved.
+    # And it is served from the cache afterwards, not re-resolved.
     again = await fetcher.fetch(db, "Baltagul", "Mihail Sadoveanu")
     assert again.cover_url == "https://covers.test/baltagul.jpg"
     assert len(fallback.calls) == 1

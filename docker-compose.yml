@@ -1,7 +1,8 @@
 # Runs Glance the way it will run in the cloud: separate containers on a private network.
 services:
   postgres:
-    # pgvector image so step 3 (vectors in the same database) needs no swap.
+    # pgvector image: the vectors (book_chunks, book_profiles) live in this
+    # same database; migration 0002 runs CREATE EXTENSION vector.
     image: pgvector/pgvector:pg17
     environment:
       # Dev-only credentials; Key Vault replaces them in step 5.
@@ -54,19 +55,30 @@ services:
       # Inside the compose network, services are reached by name.
       OLLAMA_HOST: http://ollama:11434
       DATABASE_URL: postgresql+asyncpg://glance:glance@postgres:5432/glance
-      # Explicit so the data location never depends on where the code sits.
-      CHROMA_PERSIST_DIR: /app/data/chroma
     ports:
       - "8000:8000"
-    volumes:
-      # Chroma lives on a named volume until step 3 moves vectors to Postgres.
-      - glance-data:/app/data
     depends_on:
       migrate:
         condition: service_completed_successfully
       ollama:
         condition: service_healthy
     restart: unless-stopped
+
+  test:
+    # The backend suite inside Linux on the locked versions:
+    #   docker compose --profile test run --rm test
+    # Not started by a plain `docker compose up` (profile). Needs no .env: the
+    # tests set what they need, and the database is the `glance_test` one
+    # created by postgres/init, never the one the api uses.
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: test
+    environment:
+      TEST_DATABASE_URL: postgresql+asyncpg://glance:glance@postgres:5432/glance_test
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   ollama:
     build: ./ollama
@@ -81,5 +93,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  glance-data:
   glance-pg:

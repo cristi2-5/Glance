@@ -9,10 +9,8 @@ backend failure (show an error), and it can only do that if the backend
 says which is which.
 """
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 
-import chromadb
-import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -23,7 +21,7 @@ from app.db.session import get_db, get_session_factory
 from app.main import app
 from app.models.book import Book
 from app.services.rag_service import RagService
-from app.services.vector_store import ChromaVectorStore
+from app.services.vector_store import PgVectorStore
 from tests.fakes import HashingEmbeddingClient, ScriptedSummaryClient
 from tests.fixtures.rag_corpus import build_dune
 from tests.test_rag_service import grounded_responder
@@ -43,22 +41,11 @@ class _FailingAiClient:
         raise AIProviderUnavailable("Groq is unavailable after 3 attempts.")
 
 
-@pytest.fixture
-def chroma_client() -> Iterator[chromadb.api.ClientAPI]:
-    """A clean in-memory Chroma instance per test."""
-    client = chromadb.EphemeralClient(
-        settings=chromadb.Settings(allow_reset=True, anonymized_telemetry=False)
-    )
-    client.reset()
-    yield client
-    client.reset()
-
-
-def _service(chroma_client: chromadb.api.ClientAPI, ai_client: object) -> RagService:
-    """A `RagService` over real Chroma with offline model backends."""
+def _service(ai_client: object) -> RagService:
+    """A `RagService` over the real pgvector store with offline model backends."""
     return RagService(
         embeddings=HashingEmbeddingClient(),
-        vector_store=ChromaVectorStore(chroma_client),
+        vector_store=PgVectorStore(),
         ai_client=ai_client,  # type: ignore[arg-type]
         settings=get_settings(),
     )
@@ -111,7 +98,6 @@ async def _seed_dune(db_session_factory: async_sessionmaker[AsyncSession]) -> in
 
 async def test_summary_returns_claims_and_resolvable_citations(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A successful summary carries claims whose citations resolve to reviews.
 
@@ -120,7 +106,7 @@ async def test_summary_returns_claims_and_resolvable_citations(
     with no matching review would be a dead link on the phone.
     """
     book_id = await _seed_dune(db_session_factory)
-    service = _service(chroma_client, ScriptedSummaryClient(grounded_responder))
+    service = _service(ScriptedSummaryClient(grounded_responder))
 
     async for client in _client_with(db_session_factory, service):
         headers = await _register(client)
@@ -147,7 +133,6 @@ async def test_summary_returns_claims_and_resolvable_citations(
 
 async def test_book_without_passages_returns_200_and_unavailable(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """An empty corpus is a normal `200`, not an error.
 
@@ -166,7 +151,7 @@ async def test_book_without_passages_returns_200_and_unavailable(
         await db.commit()
         book_id = bare.id
 
-    service = _service(chroma_client, ScriptedSummaryClient(grounded_responder))
+    service = _service(ScriptedSummaryClient(grounded_responder))
 
     async for client in _client_with(db_session_factory, service):
         headers = await _register(client)
@@ -182,10 +167,9 @@ async def test_book_without_passages_returns_200_and_unavailable(
 
 async def test_unknown_book_is_404(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """A book id that was never cached is a genuine not-found."""
-    service = _service(chroma_client, ScriptedSummaryClient(grounded_responder))
+    service = _service(ScriptedSummaryClient(grounded_responder))
 
     async for client in _client_with(db_session_factory, service):
         headers = await _register(client)
@@ -196,11 +180,10 @@ async def test_unknown_book_is_404(
 
 async def test_summary_requires_authentication(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """The endpoint is behind the same auth as the rest of the API."""
     book_id = await _seed_dune(db_session_factory)
-    service = _service(chroma_client, ScriptedSummaryClient(grounded_responder))
+    service = _service(ScriptedSummaryClient(grounded_responder))
 
     async for client in _client_with(db_session_factory, service):
         response = await client.get(f"/books/{book_id}/summary")
@@ -210,7 +193,6 @@ async def test_summary_requires_authentication(
 
 async def test_provider_outage_is_a_503(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """An unreachable summary provider surfaces as 503, not as "no summary".
 
@@ -218,7 +200,7 @@ async def test_provider_outage_is_a_503(
     try again, `available=false` means there is nothing to try for.
     """
     book_id = await _seed_dune(db_session_factory)
-    service = _service(chroma_client, _FailingAiClient())
+    service = _service(_FailingAiClient())
 
     async for client in _client_with(db_session_factory, service):
         headers = await _register(client)
@@ -230,12 +212,11 @@ async def test_provider_outage_is_a_503(
 
 async def test_second_request_is_served_from_cache(
     db_session_factory: async_sessionmaker[AsyncSession],
-    chroma_client: chromadb.api.ClientAPI,
 ) -> None:
     """Repeat requests reuse the stored summary rather than regenerating."""
     book_id = await _seed_dune(db_session_factory)
     ai_client = ScriptedSummaryClient(grounded_responder)
-    service = _service(chroma_client, ai_client)
+    service = _service(ai_client)
 
     async for client in _client_with(db_session_factory, service):
         headers = await _register(client)

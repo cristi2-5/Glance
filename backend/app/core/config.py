@@ -32,10 +32,13 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Database
-    database_url: str = f"sqlite+aiosqlite:///{BACKEND_DIR / 'data' / 'glance.db'}"
-
-    # Chroma (vector DB)
-    chroma_persist_dir: str = str(BACKEND_DIR / "data" / "chroma")
+    #
+    # PostgreSQL with the pgvector extension is required: chunks and profile
+    # vectors live in the same database as everything else. The default is
+    # the compose dev database (`docker compose up -d postgres`), reached
+    # through the host-side port mapping on 127.0.0.1 (not "localhost": on
+    # Windows that tries IPv6 first and adds ~2 s per connection).
+    database_url: str = "postgresql+asyncpg://glance:glance@127.0.0.1:5433/glance"
 
     # Auth / JWT
     jwt_secret_key: str = "change-this-key-in-.env"
@@ -52,8 +55,8 @@ class Settings(BaseSettings):
     # CPU. "ollama": both stay fully local, the project's original design
     # — kept working as a fallback, not deleted, in case Groq access goes
     # away or local accuracy improves enough to matter again. Embeddings
-    # (`ollama_embedding_model`) and ChromaDB are unaffected either way —
-    # they always run locally.
+    # (`ollama_embedding_model`) and the vector tables are unaffected either
+    # way — embeddings always run locally.
     ai_provider: Literal["groq", "ollama"] = "groq"
 
     # Ollama
@@ -158,7 +161,7 @@ class Settings(BaseSettings):
     # retry. Short enough to self-heal, long enough that repeated scans in
     # one session don't hammer three APIs.
     empty_book_cache_ttl_hours: int = 6
-    # Guards against a pathological Wikipedia article filling SQLite; well
+    # Guards against a pathological Wikipedia article filling the database; well
     # above any real Reception section.
     source_max_passage_chars: int = 20_000
     # Last leg of the cover-image fallback: a Wikipedia article's lead

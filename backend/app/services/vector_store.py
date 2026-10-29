@@ -1,56 +1,66 @@
-"""Persistent vector storage for book chunks, in local ChromaDB.
+"""Vector storage for book chunks, in the `book_chunks` table (PostgreSQL + pgvector).
 
 **The retrieval filter on `book_id` is a correctness invariant, not a
 ranking preference.** A summary of *Dune* built partly from *Foundation*'s
 reception passages would be fluent, plausible, and wrong — and, because
 every claim would still carry a real citation, wrong in a way that looks
 verified. Nothing downstream can detect that; the prompt certainly
-cannot. So the constraint is enforced here, structurally, in three
-independent ways:
+cannot. So the constraint is enforced here, structurally, in four
+independent ways, plus one the database adds:
 
 1. **`book_id` is a required positional parameter of `query`.** There is
    no overload that omits it and no default, so a caller cannot forget it
-   and cannot pass a filter dict of their own.
-2. **The `where` clause is built inside this module**, from that
-   parameter alone. Callers never supply raw filters, so a typo in a
-   metadata key cannot reach Chroma from anywhere else.
+   and cannot pass a filter of their own.
+2. **The `WHERE book_chunks.book_id = :book_id` is built inside this
+   module**, from that parameter alone. Callers never supply raw filters
+   or a `select`, so a refactor elsewhere cannot drop the clause.
 3. **Every returned row is re-checked against the requested `book_id`**
-   before it is handed back, and a mismatch raises.
+   before it is handed back, and a mismatch raises `CorpusLeak`.
+4. **Only this module may touch the `BookChunk` model.** A test
+   (`tests/test_vector_store.py`) scans `app/` and fails if any other file
+   references it, so nobody can write a second, unfiltered chunk query
+   next to the guarded one.
+5. **Foreign keys** (`book_id` -> `books`, `text_source_id` ->
+   `text_sources`, both `ON DELETE CASCADE`): a chunk of a book that does
+   not exist, or of a source that was replaced, cannot persist.
 
-The third guard exists because Chroma fails *silently* in exactly the
-directions that matter: `where=None` or `where={}` returns the whole
-collection unfiltered, and a misspelled metadata key matches nothing at
-all — neither raises. A metadata-type mismatch is the same trap (an `int`
-filter never matches a `str` value), which is why `Chunk.metadata` pins
-`book_id` to `int` and this module compares it as one. If the filter ever
-silently stops working, the guard turns a quiet corpus leak into a loud
-failure.
+The risks these guard against are the SQL spellings of the ones the
+previous in-process vector store had (an empty filter returned the whole
+collection and a misspelled metadata key matched nothing, both silently). In SQL the traps
+are: a refactor that drops the `WHERE` (the query still succeeds and ranks
+the whole corpus), and — subtler — **an ANN index**. pgvector applies the
+filter *after* an HNSW/IVFFlat scan, so with an index a query for a small
+book can silently return fewer rows than exist, or none. That is why
+`app/models/vector.py` has no such index and why the test suite includes
+a "small book among many far-away books" case.
 
-Chroma's client is synchronous, so every call is dispatched with
-`asyncio.to_thread` — the request path is async, and an HNSW query
-holding the event loop would stall unrelated polling requests.
+**The store runs on the caller's session and never commits.** A store with
+a session of its own would not see rows the caller has written but not yet
+committed (a freshly persisted `Book`), and with the foreign key Postgres
+would make its insert wait on the caller's open transaction — the same
+coroutine, so a hang. Writes therefore join the caller's transaction; the
+caller decides when it commits.
 """
 
-import asyncio
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import Protocol
 
-import chromadb
 import structlog
-from chromadb.api.models.Collection import Collection
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings, get_settings
+from app.models.vector import BookChunk
 from app.services.chunking import Chunk
 
 logger = structlog.get_logger(__name__)
 
-# One collection for the whole corpus, partitioned by the `book_id`
-# metadata filter rather than by collection-per-book. Chroma holds an HNSW
-# index per collection, and thousands of tiny indexes would cost far more
-# memory than one — which matters on a 7.4 GB laptop. The filter is what
-# keeps books apart; see the module docstring for how it is enforced.
-COLLECTION_NAME = "book_chunks"
+# Rows per INSERT statement. Each row binds 10 parameters and asyncpg caps a
+# statement at 32,767, so 500 leaves a wide margin. A book has ~10-60 chunks
+# and never gets near it, but an unbounded VALUES list is a limit nobody has
+# hit and nobody has tested, so the loop is there instead.
+_UPSERT_BATCH_SIZE = 500
 
 
 class CorpusLeak(RuntimeError):
@@ -91,58 +101,53 @@ class RetrievedChunk:
 
 
 class VectorStore(Protocol):
-    """Abstraction over the chunk vector store, so it can be faked in tests."""
+    """Abstraction over the chunk vector store, so it can be faked in tests.
 
-    async def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
+    Every method takes the caller's `AsyncSession` first; see the module
+    docstring for why the store never owns one.
+    """
+
+    async def upsert(
+        self, db: AsyncSession, chunks: list[Chunk], embeddings: list[list[float]]
+    ) -> None:
         """Writes chunks and their vectors, replacing any with the same ids."""
         ...
 
     async def query(
-        self, book_id: int, embedding: list[float], n_results: int
+        self, db: AsyncSession, book_id: int, embedding: list[float], n_results: int
     ) -> list[RetrievedChunk]:
         """Returns the nearest chunks *belonging to `book_id`*, never others."""
         ...
 
-    async def delete_book(self, book_id: int) -> None:
+    async def delete_book(self, db: AsyncSession, book_id: int) -> None:
         """Removes every chunk belonging to a book."""
         ...
 
-    async def count_for_book(self, book_id: int) -> int:
+    async def count_for_book(self, db: AsyncSession, book_id: int) -> int:
         """Returns how many chunks are stored for a book."""
         ...
 
 
-class ChromaVectorStore:
-    """`VectorStore` backed by a persistent local ChromaDB collection."""
+class PgVectorStore:
+    """`VectorStore` backed by the `book_chunks` table. Stateless."""
 
-    def __init__(self, client: chromadb.api.ClientAPI) -> None:
-        self._client = client
-        self._collection: Collection | None = None
-
-    def _get_collection(self) -> Collection:
-        """Returns the chunk collection, creating it on first use.
-
-        Cosine distance is set explicitly: Chroma defaults to squared L2,
-        which is the wrong metric for `nomic-embed-text` output and would
-        rank by vector magnitude as much as by meaning.
-        """
-        if self._collection is None:
-            self._collection = self._client.get_or_create_collection(
-                name=COLLECTION_NAME,
-                metadata={"hnsw:space": "cosine"},
-            )
-        return self._collection
-
-    async def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
+    async def upsert(
+        self, db: AsyncSession, chunks: list[Chunk], embeddings: list[list[float]]
+    ) -> None:
         """Writes chunks and their vectors, replacing any with the same ids.
 
+        Joins the caller's transaction; does not commit.
+
         Args:
+            db: The caller's session.
             chunks: The chunks to store.
             embeddings: One vector per chunk, in the same order.
 
         Raises:
             ValueError: If the two lists have different lengths — that
                 would silently pair each chunk with another's vector.
+            sqlalchemy.exc.IntegrityError: If a chunk's book or text
+                source does not exist (the foreign keys).
         """
         if len(chunks) != len(embeddings):
             raise ValueError(
@@ -151,26 +156,59 @@ class ChromaVectorStore:
         if not chunks:
             return
 
-        collection = self._get_collection()
-        await asyncio.to_thread(
-            collection.upsert,
-            ids=[chunk.id for chunk in chunks],
-            embeddings=embeddings,  # type: ignore[arg-type]
-            documents=[chunk.content for chunk in chunks],
-            metadatas=[chunk.metadata() for chunk in chunks],
-        )
+        for start in range(0, len(chunks), _UPSERT_BATCH_SIZE):
+            batch = chunks[start : start + _UPSERT_BATCH_SIZE]
+            vectors = embeddings[start : start + _UPSERT_BATCH_SIZE]
+            statement = insert(BookChunk).values(
+                [
+                    {
+                        "id": chunk.id,
+                        "book_id": chunk.book_id,
+                        "text_source_id": chunk.text_source_id,
+                        "content": chunk.content,
+                        "source": chunk.source,
+                        "kind": chunk.kind,
+                        "heading": chunk.heading,
+                        "url": chunk.url,
+                        "license": chunk.license,
+                        "embedding": vector,
+                    }
+                    for chunk, vector in zip(batch, vectors, strict=True)
+                ]
+            )
+            excluded = statement.excluded
+            await db.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[BookChunk.id],
+                    set_={
+                        "book_id": excluded.book_id,
+                        "text_source_id": excluded.text_source_id,
+                        "content": excluded.content,
+                        "source": excluded.source,
+                        "kind": excluded.kind,
+                        "heading": excluded.heading,
+                        "url": excluded.url,
+                        "license": excluded.license,
+                        "embedding": excluded.embedding,
+                    },
+                )
+            )
         logger.info("chunks_upserted", book_id=chunks[0].book_id, count=len(chunks))
 
     async def query(
-        self, book_id: int, embedding: list[float], n_results: int
+        self, db: AsyncSession, book_id: int, embedding: list[float], n_results: int
     ) -> list[RetrievedChunk]:
         """Returns the nearest chunks belonging to `book_id`.
 
-        `book_id` is required and the `where` clause is built here from it
+        `book_id` is required and the `WHERE` clause is built here from it
         alone — see the module docstring for why the filter is not left to
         callers. The results are re-checked against it before returning.
+        The sort is an exact one over that book's rows (there is no ANN
+        index to truncate it), with the chunk id as a tie-break so equal
+        distances come back in a stable order.
 
         Args:
+            db: The caller's session.
             book_id: The only book whose chunks may be returned.
             embedding: The query vector.
             n_results: Maximum number of chunks to return.
@@ -180,109 +218,91 @@ class ChromaVectorStore:
             chunks stored.
 
         Raises:
-            CorpusLeak: If Chroma returned a chunk from another book,
-                meaning the metadata filter silently stopped working.
+            CorpusLeak: If a chunk from another book came back, meaning
+                the filter silently stopped working.
         """
         if n_results <= 0:
             return []
 
-        collection = self._get_collection()
-        response = await asyncio.to_thread(
-            collection.query,
-            query_embeddings=[embedding],  # type: ignore[arg-type]
-            n_results=n_results,
-            where={"book_id": book_id},
-            include=["documents", "metadatas", "distances"],  # type: ignore[list-item]
+        distance = BookChunk.embedding.cosine_distance(embedding).label("distance")
+        statement = (
+            select(
+                BookChunk.id,
+                BookChunk.book_id,
+                BookChunk.content,
+                BookChunk.source,
+                BookChunk.kind,
+                BookChunk.heading,
+                BookChunk.url,
+                BookChunk.license,
+                distance,
+            )
+            .where(BookChunk.book_id == book_id)
+            .order_by(distance, BookChunk.id)
+            .limit(n_results)
         )
+        rows = (await db.execute(statement)).all()
 
-        chunks = _parse_query_response(response)
+        chunks = [
+            RetrievedChunk(
+                id=row.id,
+                book_id=row.book_id,
+                content=row.content,
+                source=row.source,
+                kind=row.kind,
+                heading=row.heading,
+                url=row.url,
+                license=row.license,
+                distance=float(row.distance),
+            )
+            for row in rows
+        ]
         _assert_no_leak(book_id, chunks)
 
         logger.info("chunks_retrieved", book_id=book_id, count=len(chunks), requested=n_results)
         return chunks
 
-    async def delete_book(self, book_id: int) -> None:
+    async def delete_book(self, db: AsyncSession, book_id: int) -> None:
         """Removes every chunk belonging to a book.
 
-        Called before re-ingesting a book whose passages were refreshed,
-        so stale chunks from the previous fetch cannot be retrieved and
-        cited alongside the new ones.
+        Called before re-ingesting, so chunks from a previous ingest
+        cannot be retrieved and cited alongside the new ones. Joins the
+        caller's transaction; does not commit.
 
         Args:
+            db: The caller's session.
             book_id: The book whose chunks to drop.
         """
-        collection = self._get_collection()
-        await asyncio.to_thread(collection.delete, where={"book_id": book_id})
+        await db.execute(delete(BookChunk).where(BookChunk.book_id == book_id))
         logger.info("chunks_deleted", book_id=book_id)
 
-    async def count_for_book(self, book_id: int) -> int:
+    async def count_for_book(self, db: AsyncSession, book_id: int) -> int:
         """Returns how many chunks are stored for a book.
 
         Args:
+            db: The caller's session.
             book_id: The book to count chunks for.
 
         Returns:
             The number of stored chunks; `0` if the book was never ingested.
         """
-        collection = self._get_collection()
-        response = await asyncio.to_thread(collection.get, where={"book_id": book_id}, include=[])
-        return len(response.get("ids") or [])
-
-
-def _parse_query_response(response: Any) -> list[RetrievedChunk]:
-    """Converts Chroma's column-oriented query response into chunk objects.
-
-    Chroma returns one list per queried vector, each holding parallel
-    lists of ids, documents, metadatas and distances. We always query with
-    a single vector, so we read row 0 throughout.
-
-    Args:
-        response: The raw `collection.query` response.
-
-    Returns:
-        The parsed chunks, in the order Chroma ranked them.
-    """
-    id_rows = response.get("ids") or []
-    if not id_rows or not id_rows[0]:
-        return []
-
-    ids = id_rows[0]
-    documents = (response.get("documents") or [[]])[0]
-    metadatas = (response.get("metadatas") or [[]])[0]
-    distances = (response.get("distances") or [[]])[0]
-
-    chunks: list[RetrievedChunk] = []
-    for index, chunk_id in enumerate(ids):
-        metadata = metadatas[index] if index < len(metadatas) else {}
-        chunks.append(
-            RetrievedChunk(
-                id=chunk_id,
-                book_id=int(metadata.get("book_id", -1)),
-                content=documents[index] if index < len(documents) else "",
-                source=str(metadata.get("source", "")),
-                kind=str(metadata.get("kind", "")),
-                # Chroma cannot store `None`, so absent values were written
-                # as empty strings; restore them here.
-                heading=str(metadata.get("heading") or "") or None,
-                url=str(metadata.get("url") or "") or None,
-                license=str(metadata.get("license") or "") or None,
-                distance=float(distances[index]) if index < len(distances) else 0.0,
-            )
+        result = await db.execute(
+            select(func.count()).select_from(BookChunk).where(BookChunk.book_id == book_id)
         )
-    return chunks
+        return int(result.scalar_one())
 
 
 def _assert_no_leak(book_id: int, chunks: list[RetrievedChunk]) -> None:
     """Verifies every retrieved chunk belongs to the requested book.
 
-    The last line of defence behind the `where` filter. Chroma does not
-    raise when a filter matches nothing or matches everything, so without
-    this a broken filter would surface as a confidently-cited summary of
-    the wrong book rather than as an error.
+    The last line of defence behind the `WHERE` clause. A query that lost
+    its filter still succeeds, so without this a broken filter would
+    surface as a confidently-cited summary of the wrong book rather than
+    as an error.
 
     Args:
         book_id: The book that was queried.
-        chunks: The chunks Chroma returned.
+        chunks: The chunks the database returned.
 
     Raises:
         CorpusLeak: If any chunk belongs to a different book.
@@ -299,20 +319,19 @@ def _assert_no_leak(book_id: int, chunks: list[RetrievedChunk]) -> None:
     )
     raise CorpusLeak(
         f"Retrieval for book {book_id} returned {len(foreign)} chunk(s) from another book. "
-        "The book_id metadata filter is not working; refusing to build a summary."
+        "The book_id filter is not working; refusing to build a summary."
     )
 
 
 @lru_cache
-def get_vector_store() -> ChromaVectorStore:
-    """Returns the (cached) shared `ChromaVectorStore`.
+def get_vector_store() -> PgVectorStore:
+    """Returns the shared `PgVectorStore`.
 
-    Cached because `chromadb.PersistentClient` opens the on-disk index;
-    building one per request would reopen it every time.
+    The store holds no connection or state (every call uses the caller's
+    session), so this is just a shared instance, kept as a factory so the
+    call sites and the FastAPI dependency wiring did not have to change.
 
     Returns:
-        A `ChromaVectorStore` over the configured persistence directory.
+        A `PgVectorStore`.
     """
-    settings: Settings = get_settings()
-    client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
-    return ChromaVectorStore(client)
+    return PgVectorStore()
