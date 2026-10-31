@@ -13,8 +13,11 @@ emulator (Azurite): a fake would only assume exactly the behaviour this design
 depends on (a received message turns invisible, then reappears with a higher
 `dequeue_count` if nobody deletes it).
 
-The same SDK talks to Azurite locally and to Azure Storage in the cloud; only
-`Settings.azure_storage_connection_string` changes.
+The same SDK talks to Azurite locally and to Azure Storage in the cloud. Locally
+that is `Settings.azure_storage_connection_string` (Azurite's public key); in
+Azure it is `Settings.azure_storage_account_name` plus the container's managed
+identity, so no account key exists anywhere (cloud step 5). The account name
+wins when both are set.
 
 **Messages carry ids only** (`{"kind": "scan", "job_id": 7}`). The photo's
 blob name is on the job row, a correction's title is already in `job.result`,
@@ -29,6 +32,7 @@ from functools import lru_cache
 from typing import Any, Protocol
 
 import structlog
+from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import (
     AzureError,
     HttpResponseError,
@@ -40,7 +44,8 @@ from azure.storage.blob.aio import BlobServiceClient, ContainerClient
 from azure.storage.queue.aio import QueueClient, QueueServiceClient
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.config import get_settings
+from app.core import identity
+from app.core.config import Settings, get_settings
 from app.core.exceptions import BlobNotFound, StorageUnavailable
 
 logger = structlog.get_logger(__name__)
@@ -186,19 +191,39 @@ class AzureBlobStore:
     by URL or SAS link.
     """
 
-    def __init__(self, connection_string: str, container: str, **client_options: Any) -> None:
+    def __init__(
+        self,
+        connection_string: str | None,
+        container: str,
+        *,
+        account_url: str | None = None,
+        credential: AsyncTokenCredential | None = None,
+        **client_options: Any,
+    ) -> None:
         """Creates the adapter; no network call happens until first use.
 
         Args:
             connection_string: Azure Storage (or Azurite) connection string.
+                Ignored (may be `None`) when `account_url` is given.
             container: Name of the private container for scan photos.
+            account_url: `https://<account>.blob.core.windows.net`, to
+                authenticate with `credential` instead of an account key.
+            credential: The managed-identity credential for `account_url`.
             **client_options: Passed to the SDK client (e.g. `retry_total`).
         """
-        self._service = BlobServiceClient.from_connection_string(
-            connection_string, **client_options
-        )
+        if account_url is not None:
+            self._service = BlobServiceClient(account_url, credential=credential, **client_options)
+        else:
+            assert connection_string is not None, "a connection string or an account URL"
+            self._service = BlobServiceClient.from_connection_string(
+                connection_string, **client_options
+            )
         self._container = container
-        self._ready = False
+        # With a managed identity the container/queue are provisioned by Bicep
+        # and never created here: least-privilege roles (the api may only
+        # *send* to the queue) cannot create them, and trying would turn
+        # every scan into a 403 -> StorageUnavailable -> 503 in Azure.
+        self._ready = account_url is not None
         self._ready_lock = asyncio.Lock()
 
     async def _container_client(self) -> ContainerClient:
@@ -266,19 +291,39 @@ class AzureJobQueue:
     readable in any storage explorer when debugging.
     """
 
-    def __init__(self, connection_string: str, queue: str, **client_options: Any) -> None:
+    def __init__(
+        self,
+        connection_string: str | None,
+        queue: str,
+        *,
+        account_url: str | None = None,
+        credential: AsyncTokenCredential | None = None,
+        **client_options: Any,
+    ) -> None:
         """Creates the adapter; no network call happens until first use.
 
         Args:
             connection_string: Azure Storage (or Azurite) connection string.
+                Ignored (may be `None`) when `account_url` is given.
             queue: Name of the queue carrying job messages.
+            account_url: `https://<account>.queue.core.windows.net`, to
+                authenticate with `credential` instead of an account key.
+            credential: The managed-identity credential for `account_url`.
             **client_options: Passed to the SDK client (e.g. `retry_total`).
         """
-        self._service = QueueServiceClient.from_connection_string(
-            connection_string, **client_options
-        )
+        if account_url is not None:
+            self._service = QueueServiceClient(account_url, credential=credential, **client_options)
+        else:
+            assert connection_string is not None, "a connection string or an account URL"
+            self._service = QueueServiceClient.from_connection_string(
+                connection_string, **client_options
+            )
         self._queue = queue
-        self._ready = False
+        # With a managed identity the container/queue are provisioned by Bicep
+        # and never created here: least-privilege roles (the api may only
+        # *send* to the queue) cannot create them, and trying would turn
+        # every scan into a 403 -> StorageUnavailable -> 503 in Azure.
+        self._ready = account_url is not None
         self._ready_lock = asyncio.Lock()
 
     async def _queue_client(self) -> QueueClient:
@@ -370,31 +415,111 @@ class AzureJobQueue:
         await self._service.close()
 
 
+#: Bounded retries and timeouts for the queue worker's storage clients. The SDK
+#: default (4 attempts, 15 s initial backoff, long read timeouts) can block one
+#: receive for a minute or more during a storage or token outage; with these
+#: values a failing call gives up after about 3 minutes in the worst case
+#: (4 attempts x 40 s + 2+4+... s of backoff), well inside the liveness window.
+QUEUE_WORKER_CLIENT_OPTIONS: dict[str, Any] = {
+    "retry_total": 3,
+    "initial_backoff": 2,
+    "increment_base": 2,
+    "connection_timeout": 20,
+    "read_timeout": 20,
+}
+
+_client_options: dict[str, Any] = {}
+
+
+def configure_client_options(options: dict[str, Any]) -> None:
+    """Sets the SDK options for storage clients created from now on.
+
+    The queue worker calls this at startup, before any client exists, with
+    `QUEUE_WORKER_CLIENT_OPTIONS`; the api keeps the SDK defaults.
+
+    Args:
+        options: Keyword arguments for the Blob/Queue service clients.
+    """
+    _client_options.clear()
+    _client_options.update(options)
+    get_blob_store.cache_clear()
+    get_job_queue.cache_clear()
+
+
+@lru_cache
+def _credential() -> AsyncTokenCredential:
+    """The process-wide managed-identity credential, shared by both clients.
+
+    Created lazily, so a process on the connection-string path never builds
+    one. Closed by `close_storage`.
+    """
+    return identity.create_credential(get_settings())
+
+
+def _account_url(settings: Settings, service: str) -> str | None:
+    """The endpoint of the managed-identity storage account, or `None` for Azurite.
+
+    Args:
+        settings: Supplies `azure_storage_account_name`.
+        service: `"blob"` or `"queue"`.
+    """
+    name = settings.azure_storage_account_name
+    return f"https://{name}.{service}.core.windows.net" if name else None
+
+
 @lru_cache
 def get_blob_store() -> AzureBlobStore:
     """Returns the process-wide blob store (one HTTP session, reused).
 
-    Used as a FastAPI dependency and by the queue worker; tests override it
-    with an in-memory fake. Close it with `close_storage()` on shutdown.
+    Authenticates with the managed identity when `azure_storage_account_name`
+    is set, otherwise with the connection string (Azurite). Used as a FastAPI
+    dependency and by the queue worker; tests override it with an in-memory
+    fake. Close it with `close_storage()` on shutdown.
     """
     settings = get_settings()
-    return AzureBlobStore(settings.azure_storage_connection_string, settings.scan_container)
+    account_url = _account_url(settings, "blob")
+    if account_url is not None:
+        return AzureBlobStore(
+            None,
+            settings.scan_container,
+            account_url=account_url,
+            credential=_credential(),
+            **_client_options,
+        )
+    return AzureBlobStore(
+        settings.azure_storage_connection_string, settings.scan_container, **_client_options
+    )
 
 
 @lru_cache
 def get_job_queue() -> AzureJobQueue:
     """Returns the process-wide job queue (one HTTP session, reused).
 
-    Used as a FastAPI dependency and by the queue worker; tests override it
-    with an in-memory fake. Close it with `close_storage()` on shutdown.
+    Authenticates like `get_blob_store`. Used as a FastAPI dependency and by
+    the queue worker; tests override it with an in-memory fake. Close it with
+    `close_storage()` on shutdown.
     """
     settings = get_settings()
-    return AzureJobQueue(settings.azure_storage_connection_string, settings.job_queue)
+    account_url = _account_url(settings, "queue")
+    if account_url is not None:
+        return AzureJobQueue(
+            None,
+            settings.job_queue,
+            account_url=account_url,
+            credential=_credential(),
+            **_client_options,
+        )
+    return AzureJobQueue(
+        settings.azure_storage_connection_string, settings.job_queue, **_client_options
+    )
 
 
 async def close_storage() -> None:
-    """Closes the cached storage clients, if they were ever created."""
+    """Closes the cached storage clients and the credential, if they were ever created."""
     for factory in (get_blob_store, get_job_queue):
         if factory.cache_info().currsize:
             await factory().close()
             factory.cache_clear()
+    if _credential.cache_info().currsize:
+        await _credential().close()
+        _credential.cache_clear()

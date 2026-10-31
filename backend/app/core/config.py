@@ -8,9 +8,28 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import make_url
+
+from app.core.exceptions import InsecureConfiguration
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+
+#: The JWT secret that ships in the code. Anyone can read it in the repository,
+#: so a deployment still using it signs tokens anybody can forge.
+DEFAULT_JWT_SECRET = "change-this-key-in-.env"
+#: Shortest JWT secret production accepts (HS256 wants at least 256 bits).
+MIN_JWT_SECRET_LENGTH = 32
+#: Azurite's well-known development account. Its name and key are printed in
+#: Microsoft's documentation, so they protect nothing in a real deployment.
+AZURITE_ACCOUNT_NAME = "devstoreaccount1"
+AZURITE_ACCOUNT_KEY = (
+    "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+)
+#: The compose dev database's credentials (`glance` / `glance`).
+DEV_DATABASE_USER = "glance"
+DEV_DATABASE_PASSWORD = "glance"  # noqa: S105 - the published dev value, detected, not used
 
 
 class Settings(BaseSettings):
@@ -30,6 +49,10 @@ class Settings(BaseSettings):
     # Application
     app_name: str = "Glance"
     debug: bool = False
+    # "production" turns on the startup guard (`validate_for_production`) and
+    # removes the interactive API docs. Everything else defaults to what a
+    # laptop needs.
+    app_env: Literal["development", "production"] = "development"
 
     # Database
     #
@@ -39,6 +62,11 @@ class Settings(BaseSettings):
     # through the host-side port mapping on 127.0.0.1 (not "localhost": on
     # Windows that tries IPv6 first and adds ~2 s per connection).
     database_url: str = "postgresql+asyncpg://glance:glance@127.0.0.1:5433/glance"
+    # "password": the password in `database_url`, as always. "entra": no
+    # password anywhere -- the app asks its managed identity for a short-lived
+    # Entra ID token and hands that to Postgres as the password (cloud step 5).
+    # The URL then carries only user and host; the user is the identity's name.
+    database_auth: Literal["password", "entra"] = "password"
 
     # Blob + Queue Storage (cloud step 4)
     #
@@ -49,7 +77,7 @@ class Settings(BaseSettings):
     # tests reach the emulator through the compose port mappings
     # (`docker compose up -d azurite`); compose overrides this with the
     # in-network `azurite` hostname. Against real Azure the connection changes
-    # (managed identity, step 5) and nothing else does.
+    # (managed identity, below) and nothing else does.
     azure_storage_connection_string: str = (
         "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;"
         "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/"
@@ -57,6 +85,19 @@ class Settings(BaseSettings):
         "BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
         "QueueEndpoint=http://127.0.0.1:10001/devstoreaccount1;"
     )
+    # Managed-identity access to a real storage account (cloud step 5). When
+    # the account name is set it wins over the connection string: the clients
+    # are built for `https://<name>.blob.core.windows.net` (and `.queue.`) and
+    # authenticate with the identity -- no account key exists anywhere.
+    azure_storage_account_name: str | None = None
+    # Client id of the user-assigned managed identity of *this* container (each
+    # Container App / job has its own, created by Bicep in step 7). Used for
+    # Storage and for the Postgres Entra token alike: one identity per
+    # container, each holding a storage credential and a database credential.
+    azure_client_id: str | None = None
+    # Azure Container Apps injects this into every container. It is read only
+    # to notice "running in Azure" (see `validate_for_production`).
+    container_app_name: str | None = None
     # Private container holding the normalised scan photos, one JPEG per scan.
     scan_container: str = "scans"
     # Queue carrying `{"kind", "job_id"}` messages from the api to the queue worker.
@@ -69,6 +110,21 @@ class Settings(BaseSettings):
     # A message delivered more often than this is poison: the job is failed
     # and the message dropped instead of crashing a queue worker forever.
     job_max_attempts: int = 3
+    # Longest a single message may be worked on. Past it the queue worker
+    # reports itself unhealthy (so the platform restarts it) and stops
+    # extending the message's visibility (so it reappears and is retried).
+    # Without the limit a hung pipeline would hold its message forever.
+    job_max_runtime_seconds: int = 600
+    # Port of the queue worker's tiny HTTP liveness endpoint (`/health`).
+    queue_worker_health_port: int = 8001
+    # The polling loop must tick at least this often to count as alive. It has
+    # to exceed `queue_idle_backoff_max_seconds` (an idle loop sleeps that
+    # long between ticks) -- `Settings` checks that at construction.
+    #
+    # Generous on purpose (300 s): during a storage or token outage one
+    # receive can legitimately block for a few minutes inside the SDK's bounded
+    # retries, and a shorter window would restart-loop healthy queue workers.
+    queue_worker_loop_stale_seconds: float = 300.0
     # An empty queue is polled with a growing pause (fewer storage
     # transactions, which are billed in Azure), reset by the next message.
     queue_idle_backoff_min_seconds: float = 1.0
@@ -77,7 +133,7 @@ class Settings(BaseSettings):
     scan_photo_cache_seconds: int = 3600
 
     # Auth / JWT
-    jwt_secret_key: str = "change-this-key-in-.env"
+    jwt_secret_key: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30
@@ -325,12 +381,11 @@ class Settings(BaseSettings):
 
     # CORS
     #
-    # The mobile client runs natively (Expo Go), where CORS does not apply —
-    # this list only matters for Expo Web and for the test page in `/dev`.
-    # By default we allow any origin, because the server only listens on the
-    # local development network. Restrict this list before any exposure
-    # beyond the LAN.
-    cors_origins: list[str] = ["*"]
+    # The mobile client runs natively, where CORS does not apply -- the list
+    # only matters for a browser client (Expo Web). So the default allows no
+    # origin at all; set CORS_ORIGINS to an explicit list if a web client ever
+    # exists. `"*"` is still accepted in development but refused in production.
+    cors_origins: list[str] = []
 
     @property
     def vision_model(self) -> str:
@@ -341,6 +396,109 @@ class Settings(BaseSettings):
     def llm_model(self) -> str:
         """The summary-generation model name for the currently active `ai_provider`."""
         return self.groq_llm_model if self.ai_provider == "groq" else self.ollama_llm_model
+
+    @model_validator(mode="after")
+    def _check_health_timing(self) -> "Settings":
+        """Rejects a liveness window shorter than the idle polling pause.
+
+        An idle queue worker legitimately sleeps up to
+        `queue_idle_backoff_max_seconds` between loop ticks; a stale limit at
+        or below that would report a healthy, idle container as frozen.
+        """
+        if self.queue_worker_loop_stale_seconds <= self.queue_idle_backoff_max_seconds:
+            raise ValueError(
+                "QUEUE_WORKER_LOOP_STALE_SECONDS must be larger than "
+                "QUEUE_IDLE_BACKOFF_MAX_SECONDS, or an idle queue worker looks frozen."
+            )
+        return self
+
+    def production_problems(self) -> list[str]:
+        """Lists every development value that must not reach production.
+
+        Pure and side-effect free, so each rule is unit-testable. Only
+        meaningful when `app_env == "production"`; `validate_for_production`
+        decides what to do with the list.
+
+        Returns:
+            One human-readable line per offending setting; empty when clean.
+        """
+        problems: list[str] = []
+
+        if self.jwt_secret_key == DEFAULT_JWT_SECRET:
+            problems.append("JWT_SECRET_KEY is the default shipped in the code.")
+        elif len(self.jwt_secret_key) < MIN_JWT_SECRET_LENGTH:
+            problems.append(f"JWT_SECRET_KEY is shorter than {MIN_JWT_SECRET_LENGTH} characters.")
+
+        if "*" in self.cors_origins:
+            problems.append("CORS_ORIGINS contains '*' (any website may call the api).")
+
+        # No storage key in a deployed container: the managed identity is the
+        # only accepted path, so a connection string (Azurite's or a real
+        # account key) is never what production runs on.
+        if not self.azure_storage_account_name:
+            problems.append(
+                "AZURE_STORAGE_ACCOUNT_NAME is not set: production must reach storage with the "
+                "managed identity, not a connection string (Azurite or an account key)."
+            )
+
+        # No database password in a deployed container either.
+        url = make_url(self.database_url)
+        if self.database_auth != "entra":
+            problems.append("DATABASE_AUTH is not 'entra': production must not use a password.")
+            if url.username == DEV_DATABASE_USER and url.password == DEV_DATABASE_PASSWORD:
+                problems.append("DATABASE_URL uses the compose development credentials (glance).")
+        elif url.password:
+            problems.append("DATABASE_AUTH=entra but DATABASE_URL still contains a password.")
+
+        if self.ai_provider == "groq" and not self.groq_api_key:
+            problems.append("GROQ_API_KEY is missing while AI_PROVIDER=groq.")
+
+        return problems
+
+    def azure_signals(self) -> list[str]:
+        """Names the settings that say this process runs in Azure.
+
+        Returns:
+            One entry per signal: `CONTAINER_APP_NAME` (injected by Container
+            Apps), `AZURE_STORAGE_ACCOUNT_NAME` or `DATABASE_AUTH=entra`.
+        """
+        signals: list[str] = []
+        if self.container_app_name:
+            signals.append("CONTAINER_APP_NAME")
+        if self.azure_storage_account_name:
+            signals.append("AZURE_STORAGE_ACCOUNT_NAME")
+        if self.database_auth == "entra":
+            signals.append("DATABASE_AUTH=entra")
+        return signals
+
+    def validate_for_production(self) -> None:
+        """Refuses to continue on development settings where that matters.
+
+        With `app_env == "production"` every rule of `production_problems`
+        applies. With `app_env == "development"` the only check is the bypass:
+        a container that is evidently in Azure (see `azure_signals`) but was
+        started without `APP_ENV=production` would skip every rule, which is
+        the easiest misconfiguration to make, so it is refused too. A laptop
+        (Azurite, password, no Azure variables) is unaffected.
+
+        Raises:
+            InsecureConfiguration: Listing every offending setting at once,
+                so one failed start fixes them all.
+        """
+        if self.app_env != "production":
+            signals = self.azure_signals()
+            if signals:
+                raise InsecureConfiguration(
+                    "Running in Azure without APP_ENV=production "
+                    f"(seen: {', '.join(signals)}): the production guard would be skipped. "
+                    "Set APP_ENV=production."
+                )
+            return
+        problems = self.production_problems()
+        if problems:
+            raise InsecureConfiguration(
+                "Refusing to start with APP_ENV=production:\n- " + "\n- ".join(problems)
+            )
 
     def groq_reasoning_effort_for(self, model: str) -> str | None:
         """The `reasoning_effort` to send for a given Groq model.

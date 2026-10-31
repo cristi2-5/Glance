@@ -16,10 +16,9 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import Connection, pool
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import get_settings
-from app.db.session import Base
+from app.db.session import Base, build_engine, dispose_engine
 
 # Required import: registers every model on `Base.metadata`, which is what
 # autogenerate and the drift test compare the database against.
@@ -80,10 +79,14 @@ async def run_migrations_online() -> None:
     """Connects with the async driver and runs the migrations on that connection."""
     # NullPool: a one-shot process has no use for a pool, and a pooled
     # connection would outlive the event loop `asyncio.run` is about to close.
-    engine = create_async_engine(_database_url(), poolclass=pool.NullPool)
-    async with engine.connect() as connection:
-        await connection.run_sync(_run_sync_migrations)
-    await engine.dispose()
+    # `build_engine` is the application's own factory, so with DATABASE_AUTH=entra
+    # the migrate job authenticates with its managed identity, like the api.
+    engine = build_engine(_database_url(), get_settings(), poolclass=pool.NullPool)
+    try:
+        async with engine.connect() as connection:
+            await connection.run_sync(_run_sync_migrations)
+    finally:
+        await dispose_engine(engine)
 
 
 if context.is_offline_mode():

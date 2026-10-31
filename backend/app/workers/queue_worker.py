@@ -35,6 +35,18 @@ Azure issues a new pop receipt on every extension, so the delete at the end
 uses the newest one (`_Lease`). A heartbeat that fails is logged and ignored:
 the worst case is the ordinary at-least-once redelivery.
 
+**Hung jobs are cancelled, not just outlived.** The handling of one message runs
+inside `asyncio.timeout(job_max_runtime_seconds)`. A timeout is treated like any
+unexpected failure (`queue_job_timed_out` is logged, the message stays on the
+queue, the attempt limit eventually makes it poison), but the hung coroutine is
+actually cancelled, so it cannot keep writing while a second delivery runs.
+Blocking work in threads (`asyncio.to_thread`, e.g. OCR) cannot be cancelled;
+only the platform restart stops those. Hence the timing rule: liveness
+`failureThreshold x periodSeconds` must elapse **before** `job_max_runtime +
+(visibility - heartbeat interval)` (the last extension's remaining life, 750 s
+with the defaults), so a container stuck in a thread is restarted before its
+message becomes visible to another queue worker.
+
 **Shutdown.** SIGTERM stops the polling loop but lets the message in hand run
 to its end, which only works if the platform waits long enough: compose's
 `stop_grace_period` and the Container App's `terminationGracePeriodSeconds`
@@ -49,6 +61,16 @@ unfinished) is failed with a user-facing error. A pipeline *outcome* such as
 an unreadable cover is not a retry case: that already ends the job as
 `failed` on the first delivery.
 
+**Liveness (cloud step 5).** Azure cannot tell a frozen queue worker from an
+idle one, and it has no HTTP port. So `main` serves a tiny `/health` endpoint
+(stdlib `asyncio.start_server`, no new dependency) backed by `WorkerHealth`:
+alive when the polling loop ticked recently, or when the message in hand has
+been worked on for less than `job_max_runtime_seconds`. A pipeline that hangs
+therefore turns the endpoint unhealthy, the platform restarts the container,
+and the message -- whose heartbeat stopped extending at the same limit -- is
+redelivered. Like the api's `/health` it checks no dependency: a database
+outage must not make the platform restart healthy containers in a loop.
+
 The unit tested here is `QueueWorker.process_one`; `run` only adds the polling
 loop, backoff and shutdown signals around it.
 """
@@ -56,6 +78,8 @@ loop, backoff and shutdown signals around it.
 import asyncio
 import contextlib
 import signal
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -67,16 +91,18 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import BlobNotFound, StorageUnavailable
 from app.core.logging import configure_logging
 from app.db.init_db import init_db
-from app.db.session import AsyncSessionLocal
+from app.db.session import AsyncSessionLocal, dispose_engine, engine
 from app.models.job import Job, JobStatus
 from app.services.data_fetcher import BookDataFetcher, build_data_fetcher
 from app.services.storage import (
+    QUEUE_WORKER_CLIENT_OPTIONS,
     BlobStore,
     JobKind,
     JobMessage,
     JobQueue,
     QueuedMessage,
     close_storage,
+    configure_client_options,
     get_blob_store,
     get_job_queue,
 )
@@ -87,6 +113,128 @@ logger = structlog.get_logger(__name__)
 
 POISON_ERROR = "This scan could not be processed. Please try again."
 PHOTO_MISSING_ERROR = "The scan photo is no longer available. Please scan the cover again."
+
+
+class WorkerHealth:
+    """What the liveness endpoint answers: has this queue worker stopped making progress?
+
+    Pure bookkeeping around an injectable clock, so the rules are testable
+    without sockets or sleeping. The loop calls `tick`; the message handler
+    calls `job_started` / `job_finished`.
+
+    Healthy means *either* the polling loop ticked within
+    `queue_worker_loop_stale_seconds` *or* the message in hand started less
+    than `job_max_runtime_seconds` ago. The loop cannot tick while a job runs,
+    which is why the second clause exists; once the job outlives its limit
+    nothing excuses a silent loop and the answer turns unhealthy.
+    """
+
+    def __init__(self, settings: Settings, clock: Callable[[], float] = time.monotonic) -> None:
+        """Starts the clock; a queue worker that never ticks goes stale on its own.
+
+        Args:
+            settings: Supplies the stale and max-runtime limits.
+            clock: A monotonic clock in seconds (injectable for tests).
+        """
+        self._settings = settings
+        self._clock = clock
+        self._last_tick = clock()
+        self._job_started: float | None = None
+
+    def tick(self) -> None:
+        """Records that the polling loop is running."""
+        self._last_tick = self._clock()
+
+    def job_started(self) -> None:
+        """Records that a message is being worked on."""
+        self._job_started = self._clock()
+
+    def job_finished(self) -> None:
+        """Records that the message in hand is done (or abandoned)."""
+        self._job_started = None
+
+    def check(self) -> tuple[bool, str]:
+        """Evaluates the liveness rules.
+
+        Returns:
+            `(healthy, reason)`; the reason is a short human-readable phrase
+            for the probe's response body, not something users see.
+        """
+        now = self._clock()
+        if self._job_started is not None and (
+            now - self._job_started < self._settings.job_max_runtime_seconds
+        ):
+            return True, "processing a message"
+        if now - self._last_tick <= self._settings.queue_worker_loop_stale_seconds:
+            return True, "polling"
+        if self._job_started is not None:
+            return False, "a message has exceeded the maximum runtime"
+        return False, "the polling loop has stopped"
+
+
+def health_response(health: WorkerHealth, request_line: str) -> bytes:
+    """Builds the raw HTTP/1.1 reply to one request on the health port.
+
+    Args:
+        health: The queue worker's liveness state.
+        request_line: The first line of the request, e.g. `GET /health HTTP/1.1`.
+
+    Returns:
+        The complete response bytes: 200 `ok` / 503 with the reason for
+        `GET /health`, 404 for any other path, 405 for any other method.
+    """
+    parts = request_line.split()
+    if len(parts) < 2 or parts[0] != "GET":
+        status_line, body = "405 Method Not Allowed", "method not allowed"
+    elif parts[1].split("?")[0] != "/health":
+        status_line, body = "404 Not Found", "not found"
+    else:
+        healthy, reason = health.check()
+        status_line = "200 OK" if healthy else "503 Service Unavailable"
+        body = "ok" if healthy else f"unhealthy: {reason}"
+    payload = body.encode()
+    head = (
+        f"HTTP/1.1 {status_line}\r\nContent-Type: text/plain; charset=utf-8\r\n"
+        f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n"
+    )
+    return head.encode() + payload
+
+
+async def start_health_server(
+    health: WorkerHealth, port: int, host: str = "0.0.0.0"
+) -> asyncio.Server:
+    """Starts the liveness HTTP server.
+
+    A hand-rolled responder on `asyncio.start_server` is enough for a probe
+    that asks one question, and adds no dependency to the image. It binds all
+    interfaces because the platform's probe arrives from outside the
+    container; compose publishes no port for it.
+
+    Args:
+        health: The liveness state to report.
+        port: TCP port to listen on (`0` picks a free one).
+        host: Interface to bind.
+
+    Returns:
+        The running server; the caller closes it on shutdown.
+    """
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=5)
+            writer.write(health_response(health, line.decode("latin-1").strip()))
+            await writer.drain()
+        except (TimeoutError, ConnectionError, ValueError, asyncio.LimitOverrunError):
+            # A probe that went away, never spoke, or sent an absurdly long
+            # request line (readline raises ValueError past the stream limit)
+            # needs no answer.
+            pass
+        finally:
+            writer.close()
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
+
+    return await asyncio.start_server(handle, host, port)
 
 
 @dataclass
@@ -112,6 +260,7 @@ class QueueWorker:
         vision_service: VisionService,
         data_fetcher: BookDataFetcher,
         settings: Settings,
+        health: WorkerHealth | None = None,
     ) -> None:
         """Wires the queue worker; nothing is read from the queue until it runs.
 
@@ -122,6 +271,8 @@ class QueueWorker:
             vision_service: Identifies covers.
             data_fetcher: Gathers book data from the catalogs.
             settings: Visibility timeout, attempt limit and backoff bounds.
+            health: Liveness bookkeeping fed by the loop; one is created if
+                omitted (the production `main` shares it with the health server).
         """
         self._queue = queue
         self._blobs = blob_store
@@ -130,6 +281,7 @@ class QueueWorker:
         self._fetcher = data_fetcher
         self._settings = settings
         self._stopping = asyncio.Event()
+        self.health = health or WorkerHealth(settings)
 
     def stop(self) -> None:
         """Asks `run` to exit after the message it is currently handling."""
@@ -153,10 +305,30 @@ class QueueWorker:
 
         lease = _Lease(message)
         heartbeat = asyncio.create_task(self._keep_alive(lease))
+        self.health.job_started()
+        limit = asyncio.timeout(self._settings.job_max_runtime_seconds)
         try:
-            await self._handle(lease)
+            async with limit:
+                await self._handle(lease)
         except StorageUnavailable:
             raise
+        except TimeoutError:
+            if limit.expired():
+                # The pipeline hung: it is cancelled here instead of running
+                # on beside a second delivery of the same message. Like any
+                # other failure the message stays on the queue.
+                logger.error(
+                    "queue_job_timed_out",
+                    message_id=message.message_id,
+                    dequeue_count=message.dequeue_count,
+                    max_runtime_seconds=self._settings.job_max_runtime_seconds,
+                )
+            else:
+                logger.exception(
+                    "queue_message_failed",
+                    message_id=message.message_id,
+                    dequeue_count=message.dequeue_count,
+                )
         except Exception:
             # Deliberately broad: whatever broke (database down, a bug), the
             # message must not be deleted — the job is not in a final state.
@@ -168,6 +340,7 @@ class QueueWorker:
                 dequeue_count=message.dequeue_count,
             )
         finally:
+            self.health.job_finished()
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
@@ -178,11 +351,24 @@ class QueueWorker:
 
         Failing to extend is not fatal: the message may simply reappear and
         be redelivered, which the idempotent handling already tolerates.
+
+        Stops by itself once the message has been held for
+        `job_max_runtime_seconds`: a job still running then is hung, and
+        extending it forever would keep its message from ever being retried.
+        The liveness endpoint turns unhealthy at the same moment.
         """
         timeout = self._settings.job_visibility_timeout_seconds
         interval = timeout / 2
+        started = time.monotonic()
         while True:
             await asyncio.sleep(interval)
+            if time.monotonic() - started >= self._settings.job_max_runtime_seconds:
+                logger.error(
+                    "queue_job_exceeded_max_runtime",
+                    message_id=lease.message.message_id,
+                    max_runtime_seconds=self._settings.job_max_runtime_seconds,
+                )
+                return
             try:
                 receipt = await self._queue.extend(lease.message, timeout)
             except StorageUnavailable:
@@ -197,6 +383,7 @@ class QueueWorker:
         logger.info("queue_worker_started", queue=settings.job_queue)
 
         while not self._stopping.is_set():
+            self.health.tick()
             try:
                 handled = await self.process_one()
             except StorageUnavailable:
@@ -214,6 +401,7 @@ class QueueWorker:
                 pass
             delay = min(delay * 2, settings.queue_idle_backoff_max_seconds)
 
+        self.health.tick()
         logger.info("queue_worker_stopped")
 
     async def _handle(self, lease: _Lease) -> None:
@@ -385,9 +573,16 @@ async def main() -> None:
     """Builds the production queue worker and runs it until signalled."""
     settings = get_settings()
     configure_logging(debug=settings.debug)
-    # Same guard as the api: refuse to run against a schema that is behind.
+    # Bounded SDK retries/timeouts, before any storage client exists: a storage
+    # outage must fail a receive in minutes at most, not stall the loop.
+    configure_client_options(QUEUE_WORKER_CLIENT_OPTIONS)
+    # Same guard as the api: a production queue worker with development
+    # settings refuses to start instead of quietly running wide open.
+    settings.validate_for_production()
+    # Also as in the api: refuse to run against a schema that is behind.
     await init_db()
 
+    health = WorkerHealth(settings)
     worker = QueueWorker(
         queue=get_job_queue(),
         blob_store=get_blob_store(),
@@ -395,12 +590,17 @@ async def main() -> None:
         vision_service=build_vision_service(),
         data_fetcher=build_data_fetcher(),
         settings=settings,
+        health=health,
     )
     _install_signal_handlers(worker)
+    health_server = await start_health_server(health, settings.queue_worker_health_port)
     try:
         await worker.run()
     finally:
+        health_server.close()
+        await health_server.wait_closed()
         await close_storage()
+        await dispose_engine(engine)
 
 
 if __name__ == "__main__":

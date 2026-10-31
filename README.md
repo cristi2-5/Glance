@@ -131,4 +131,6 @@ npx expo start
 
 Scan the QR code with Expo Go, with the phone on the same Wi-Fi network. The app works out the backend's address from the development server on its own, so there's nothing to configure when you move between networks.
 
+**Running in production (Azure).** Set `APP_ENV=production`. The backend then refuses to start while any development value is still in place (the default `JWT_SECRET_KEY`, any storage connection string instead of the managed identity, any database password instead of Entra, `CORS_ORIGINS=["*"]`, a missing `GROQ_API_KEY`) and lists every problem at once; it also turns off `/docs`. In Azure the containers hold no storage key and no database password: set `AZURE_STORAGE_ACCOUNT_NAME` and `AZURE_CLIENT_ID` (a managed identity) and `DATABASE_AUTH=entra`, and keep `JWT_SECRET_KEY`, `GROQ_API_KEY` and `GOOGLE_BOOKS_API_KEY` in Key Vault. `GET /health` is the liveness probe, `GET /ready` checks the database; the queue worker serves its own `/health` on port 8001. Point the app at the deployed backend with `EXPO_PUBLIC_API_URL=https://<your-app>.azurecontainerapps.io`.
+
 Want it running entirely on your own hardware? Set `AI_PROVIDER=ollama` in `backend/.env`, then `ollama pull moondream && ollama pull llama3.2`.

@@ -219,7 +219,7 @@ the answer for anything else. It now is: see the next decision.
 
 ### Blob + queue + queue worker (cloud step 4)
 
-**What changed:** `POST /books/analyze-cover` no longer runs the pipeline in the api process. The api normalises the photo (`preprocess_cover`: EXIF rotation, 768 px, JPEG), stores it in a **private Blob container** (`scans/{uuid4}.jpg`), puts a message on **Queue Storage** (`cover-jobs`) and answers 202. A separate **queue worker** container (same image, command `python -m app.workers.queue_worker`, no ports) takes the message and runs the unchanged `process_cover` / `refresh_book_data`. `PATCH /jobs/{id}/correction` does the same with a `refresh` message. The client is unchanged (202 + polling). Locally both storage services are **Azurite**, Microsoft's official emulator, driven by the real Azure SDK; only `AZURE_STORAGE_CONNECTION_STRING` changes in Azure (managed identity, step 5).
+**What changed:** `POST /books/analyze-cover` no longer runs the pipeline in the api process. The api normalises the photo (`preprocess_cover`: EXIF rotation, 768 px, JPEG), stores it in a **private Blob container** (`scans/{uuid4}.jpg`), puts a message on **Queue Storage** (`cover-jobs`) and answers 202. A separate **queue worker** container (same image, command `python -m app.workers.queue_worker`, no ports) takes the message and runs the unchanged `process_cover` / `refresh_book_data`. `PATCH /jobs/{id}/correction` does the same with a `refresh` message. The client is unchanged (202 + polling). Locally both storage services are **Azurite**, Microsoft's official emulator, driven by the real Azure SDK; only the storage settings change in Azure (managed identity, see "Security & identity (cloud step 5)").
 
 **Why:** with `BackgroundTasks` the photo lived in the api's RAM, so a restart or scale-in mid-scan lost it and left the job `running` forever, the heavy work could not leave the api, and it was the last reason for the single uvicorn worker. (Terminology: "queue worker" is this container; "uvicorn worker" is a web-server process.)
 
@@ -246,6 +246,76 @@ the answer for anything else. It now is: see the next decision.
 **Azurite is required by the test suite**, like Postgres: the adapter tests run against the real emulator (a fake would only restate the queue semantics the design depends on), and conftest fails the session, never skips, if it is down.
 
 **Step 7 note:** scale the queue worker with a KEDA `azure-queue` scale rule (min replicas 0); the visibility timeout must stay above the longest scan (the heartbeat covers overruns). Set the Container App's termination grace period (`terminationGracePeriodSeconds`, max 600) to at least the worst-case job: the default 30 s is shorter than the 30-120 s pipeline, so a scale-in would otherwise kill the queue worker mid-scan.
+
+### Security & identity (cloud step 5)
+
+**Goal:** in Azure, no container holds a storage key or a database password; the few remaining secrets come from Key Vault; a misconfigured production container refuses to start; and the platform can tell a frozen container from a healthy one. This step is **code only** — the identities, roles and Key Vault are created by Bicep in step 7, and the real token flow can only be exercised at deploy time. Locally nothing changes: the default path is still Azurite + a password.
+
+**Managed identity, not keys.** `Settings.azure_storage_account_name` set → Blob and Queue clients are built for `https://<name>.blob|queue.core.windows.net` with a `ManagedIdentityCredential(client_id=azure_client_id)`; unset → the Azurite connection string, exactly as before. `DATABASE_AUTH=entra` → asyncpg's `password` is an async callable returning a token for `https://ossrdbms-aad.database.windows.net/.default` (verified in asyncpg 0.32's `_connect_addr`: a callable password is called, and awaited if awaitable, for **every** new connection — so a pooled replica that lives for days always logs in with a fresh token; `azure-identity` caches and renews it). One `build_engine(url, settings)` in `db/session.py` is used by the app **and** `migrations/env.py`, so the `migrate` job authenticates like the api. `app/core/identity.py` is the only place credentials are created (a module-level factory, replaced by a fake in tests).
+
+**`ManagedIdentityCredential`, never `DefaultAzureCredential`.** The latter walks a chain (env vars, workload identity, Azure CLI, a developer's `az login`...): slow to fall through and able to silently authenticate as whoever is logged in. A production container must use the identity assigned to it or fail loudly.
+
+**What is still a secret, and where it lives**
+
+| Secret | Env var | In Azure |
+|---|---|---|
+| JWT signing key | `JWT_SECRET_KEY` | Key Vault secret → Container App secret reference → env var |
+| Groq key | `GROQ_API_KEY` | same |
+| Google Books key | `GOOGLE_BOOKS_API_KEY` | same |
+
+Nothing else: no storage key, no database password (production refuses both). The app already reads these from the environment, so Key Vault needed no code. The Container App reads the vault with its identity.
+
+**RBAC per identity (step 7 creates these)**
+
+| Identity | Storage | Key Vault | PostgreSQL |
+|---|---|---|---|
+| api | Storage Blob Data Contributor + Storage Queue Data Message Sender **scoped to the `cover-jobs` queue** | Key Vault Secrets User | its own Entra role: DML only |
+| queue worker | Storage Blob Data Contributor + **Storage Queue Data Contributor scoped to the `cover-jobs` queue** | Key Vault Secrets User | its own Entra role: DML only |
+| migrate job | — | — | its own Entra role that owns the schema (DDL) |
+
+Why Contributor for the queue worker: the heartbeat (`JobQueue.extend`) calls Update Message, which needs `queues/messages/write`; *Storage Queue Data Message Processor* has only read + process (receive, delete) and would make every extension a 403, so any job longer than the visibility timeout would be handed to a second queue worker. Contributor is scoped to the one queue, so it cannot touch other queues. The api only sends, so Message Sender is enough.
+
+**Each container app / job has its own user-assigned identity, hence its own `AZURE_CLIENT_ID`** (the client id of *that* container's identity; `ManagedIdentityCredential(client_id=...)` picks it). Never share one id across containers: it would collapse the table above into the union of all rights. Each container thus holds two credentials, a storage one and a database one, both minted from its own identity.
+
+The adapters never create the container or queue in identity mode (`_ready = account_url is not None`); Bicep creates both up front, because these roles cannot create them.
+
+**Postgres Entra bootstrap (step 7, one-time, by the Entra admin).** Three identities: `<api>`, `<queue-worker>` and `<migrate>` (the migrate job gets its own identity, the one that owns the schema; the other two only do DML). Names are the managed identities' exact, case-sensitive names, and `DATABASE_URL` carries that name as the user and the server host, no password.
+
+1. Connected to the `postgres` database as the Entra admin, for each of the three: `select * from pgaadauth_create_principal('<identity-name>', false, false);`
+2. Connected to `glance` as the Entra admin:
+   - `CREATE EXTENSION IF NOT EXISTS vector;` (a non-admin principal cannot create it, so the admin does; migration `0002_pgvector`'s `IF NOT EXISTS` then does nothing. `VECTOR` must also be in `azure.extensions`.)
+   - `GRANT CREATE, USAGE ON SCHEMA public TO "<migrate>";`
+   - `GRANT USAGE ON SCHEMA public TO "<api>", "<queue-worker>";`
+   - `ALTER DEFAULT PRIVILEGES FOR ROLE "<migrate>" IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "<api>", "<queue-worker>";`
+   - `ALTER DEFAULT PRIVILEGES FOR ROLE "<migrate>" IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO "<api>", "<queue-worker>";`
+
+   The default privileges apply to tables the migrate role creates *afterwards*, which is every table (the first migration runs after this bootstrap).
+
+**TLS to Postgres is verified in code.** asyncpg's default `sslmode=prefer` encrypts when the server agrees but neither verifies the certificate nor refuses a downgrade to plaintext, so a man-in-the-middle could read the Entra bearer token sent as the password. `build_engine` therefore passes `connect_args["ssl"] = ssl.create_default_context()` (verifies chain and host name against the system CAs, present in `python:slim`) whenever `database_auth == "entra"` or `app_env == "production"`; local dev with a password stays plain. Not done through `?sslmode=verify-full` in the URL: asyncpg would then look for `~/.postgresql/root.crt`.
+
+**The migrate job is not behind `validate_for_production`.** `migrations/env.py` does not call it, so a migrate job started without `APP_ENV=production` is not refused. Acceptable: the job runs only Alembic's DDL, holds no application secret (no JWT/Groq keys), has no ingress, and authenticates with its own managed identity; TLS verification follows `DATABASE_AUTH=entra`, not `APP_ENV`, so the part that matters (no password, verified TLS) still holds. Give it `DATABASE_AUTH=entra` like the others.
+
+**Production guard.** `APP_ENV=production` makes startup (api lifespan and queue worker `main()`) call `Settings.validate_for_production()`, which raises `InsecureConfiguration` listing **every** problem at once. The rules live in the pure `Settings.production_problems()`: JWT secret is the shipped default or under 32 chars; `cors_origins` contains `"*"`; `AZURE_STORAGE_ACCOUNT_NAME` is not set (production accepts no connection string at all, neither Azurite's nor one with an account key); `DATABASE_AUTH` is not `entra` (no database password in production; the compose `glance`/`glance` credentials are named in the message when present), or, with `DATABASE_AUTH=entra`, the URL carries *any* password; `GROQ_API_KEY` missing while `AI_PROVIDER=groq`. Production also removes `/docs`, `/redoc`, `/openapi.json` (`create_app(settings)` in `main.py`; `app = create_app(get_settings())`). **The guard cannot be bypassed by forgetting `APP_ENV`.** `validate_for_production` also runs with `APP_ENV=development`: if `CONTAINER_APP_NAME` (injected by Container Apps), `AZURE_STORAGE_ACCOUNT_NAME` or `DATABASE_AUTH=entra` is set, startup is refused with "Running in Azure without APP_ENV=production". A laptop (Azurite, password, none of those variables) is unaffected. Wikipedia cover fallback stays ON (private build; user decision 2026-10-29) — see the Cover images decision.
+
+**CORS** defaults to `[]`: the client is a native app and CORS only governs browsers.
+
+**Probes — liveness has no dependencies on purpose.**
+
+| Probe | Endpoint | Checks | On failure |
+|---|---|---|---|
+| api startup + liveness | `GET /health` | the process answers; nothing else | restart |
+| api readiness | `GET /ready` | `SELECT 1` on Postgres, 2 s timeout → 200/503 | traffic withheld, **no restart** |
+| queue worker liveness | `GET :8001/health` (stdlib `asyncio.start_server`) | polling loop ticked within `queue_worker_loop_stale_seconds` (300) **or** the message in hand is younger than `job_max_runtime_seconds` (600) | restart |
+
+A liveness probe that checked Postgres would make Azure kill and restart every healthy container during a database outage, in a loop, fixing nothing. Readiness only stops routing. The 300 s loop window must exceed the 10 s idle backoff (an idle queue worker sleeps that long between ticks); `Settings` rejects a configuration where it does not. It is that large because one receive can block inside the SDK's retries during a storage or token outage; the queue worker's storage clients therefore use bounded retries and timeouts (`QUEUE_WORKER_CLIENT_OPTIONS`: `retry_total=3`, 2 s backoff base, 20 s connect/read timeouts, about 3 minutes worst case per call), so an outage fails a receive in finite time and the window cannot expire on a healthy container. The api keeps the SDK defaults. The heartbeat stops extending a message after `job_max_runtime_seconds`, so a hung pipeline turns liveness unhealthy, the container is restarted, and the message reappears and is retried (before, a hung job was extended forever). Compose re-enables the queue worker's healthcheck against `127.0.0.1:8001` with no published port.
+
+**A hung job is cancelled, and the probe timing must respect it.** The handling of one message runs inside `asyncio.timeout(job_max_runtime_seconds)`; on expiry the coroutine is cancelled, `queue_job_timed_out` is logged, and the message stays on the queue (treated like any unexpected failure, so the poison limit eventually applies). Work blocked in a thread (`asyncio.to_thread`, e.g. OCR) cannot be cancelled; there the platform restart is the only stop, so in step 7 the liveness `failureThreshold x periodSeconds` must elapse **before** `job_max_runtime_seconds + (job_visibility_timeout_seconds - heartbeat interval)` (600 + 150 = 750 s with the defaults: the last extension's remaining life), or a second queue worker could run the job while the first is still stuck.
+
+**Honest limit.** Managed identity removes *stored* secrets, not *access*: any code running inside the container (a compromised dependency, an RCE) can ask the local identity endpoint for tokens and use whatever the identity may do. What limits the damage is least privilege (the RBAC table above, one identity per role) and short-lived tokens (nothing worth stealing at rest). It is not a boundary against code execution in the container.
+
+**Client:** `EXPO_PUBLIC_API_URL` already overrides the inferred address; in Azure it is the Container App's `https://…azurecontainerapps.io` (TLS terminated by Azure; uvicorn runs with `--proxy-headers`). Only `frontend/.env.example` changed.
+
+**Step 7 notes:** set the startup probe to `/health`, liveness to `/health` (api) and `:8001/health` (queue worker, a second probe port), readiness to `/ready`; set `APP_ENV=production`, `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_CLIENT_ID`, `DATABASE_AUTH=entra`.
 
 ### Dual-purpose embeddings
 
@@ -281,6 +351,7 @@ The vectors generated when a book is ingested serve both RAG (Module 5) and reco
 | Embeddings | `nomic-embed-text` via Ollama | 768-dim, always local |
 | HTTP client | `httpx` (async) | retry + backoff |
 | Fuzzy matching | `rapidfuzz` | title/author normalization |
+| Azure identity | `azure-identity` | `ManagedIdentityCredential` for Storage and the Postgres Entra token (step 5) |
 | Testing | `pytest` + `pytest-asyncio` + `httpx.AsyncClient` + `respx` | zero real network calls in the test suite |
 | Formatting / linting | `black` + `ruff` | before every commit |
 | Type checking | `mypy` (strict) | no unjustified `Any` |
@@ -296,6 +367,7 @@ backend/
 │   │   ├── config.py               # Settings (pydantic-settings)
 │   │   ├── security.py             # JWT, password hashing
 │   │   ├── exceptions.py           # custom exceptions + handlers
+│   │   ├── identity.py             # managed-identity credential factory + Postgres token provider
 │   │   └── logging.py              # structlog setup
 │   ├── api/
 │   │   ├── deps.py                 # dependencies (current_user, db session)
@@ -428,6 +500,7 @@ The two parts progress **module by module, in parallel** — not backend-complet
 ```bash
 docker compose up -d postgres      # (repo root) the database; REQUIRED before uvicorn, alembic and pytest
 uvicorn app.main:app --reload      # start the dev server (after `alembic upgrade head`)
+curl localhost:8000/ready          # readiness (200 only while Postgres answers); /health is liveness only
 pytest                             # run the tests (Postgres must be up; fails fast otherwise)
 pytest -m "not slow"               # skip tests that call Ollama
 black . && ruff check .            # formatting + lint
@@ -463,6 +536,7 @@ The project is **hybrid**: storage and embeddings stay ours; vision and LLM gene
 - **Never hardcode the provider.** Both integrations go through `Settings.ai_provider` / `Settings.vision_model` / `Settings.llm_model` in `core/config.py`, never a direct `if` on a model name scattered through the code.
 - No other cloud LLM/vision APIs (OpenAI, Anthropic API, etc.) and no Google Colab — Groq is the one deliberate exception, not a general opening.
 - Groq calls must handle rate limits and API errors gracefully (retry with backoff, then raise `AIProviderUnavailable`) — never let a preview-model hiccup propagate as an unhandled exception. See `groq_client.py`.
+- No storage key or database password in a deployed container: managed identity only (`AZURE_STORAGE_ACCOUNT_NAME`, `DATABASE_AUTH=entra`); with `APP_ENV=production` any development value makes startup fail (see "Security & identity (cloud step 5)").
 - No scraping. Only the official sources listed in the table above.
 - No PyTorch in dependencies.
 - `.env` never in git — only `.env.example` with keys and no real values.

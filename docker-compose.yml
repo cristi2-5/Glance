@@ -5,7 +5,7 @@ services:
     # same database; migration 0002 runs CREATE EXTENSION vector.
     image: pgvector/pgvector:pg17
     environment:
-      # Dev-only credentials; Key Vault replaces them in step 5.
+      # Dev-only credentials; in Azure there is no password (Entra ID token).
       POSTGRES_USER: glance
       POSTGRES_PASSWORD: glance
       POSTGRES_DB: glance
@@ -87,14 +87,14 @@ services:
     build: ./backend
     image: glance-backend
     # Secrets are injected at run time, never baked into the image
-    # (Key Vault will play this role in Azure).
+    # (Key Vault references play this role in Azure).
     env_file: backend/.env
     environment:
       # Inside the compose network, services are reached by name.
       OLLAMA_HOST: http://ollama:11434
       DATABASE_URL: postgresql+asyncpg://glance:glance@postgres:5432/glance
       # Azurite's well-known public development account, addressed by its
-      # in-network hostname. Azure Storage (managed identity) replaces it in step 5.
+      # in-network hostname. Azure Storage (managed identity) replaces it in Azure.
       AZURE_STORAGE_CONNECTION_STRING: &azurite-connection >-
         DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;
     ports:
@@ -126,10 +126,20 @@ services:
     # and a scan takes 30-120 s; compose's default 10 s would SIGKILL it
     # mid-job (the message would reappear, but the work is wasted).
     stop_grace_period: 150s
-    # The image's HEALTHCHECK probes the api's HTTP /health, which the queue
-    # worker never serves, so it would be reported unhealthy forever.
+    # The image's HEALTHCHECK probes the api's port 8000, which the queue
+    # worker never serves, so it is replaced by the queue worker's own liveness
+    # endpoint (loop ticking, or a message younger than JOB_MAX_RUNTIME_SECONDS).
+    # No port is published: only this in-container probe asks.
     healthcheck:
-      disable: true
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=4).status == 200 else 1)"
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
     depends_on:
       migrate:
         condition: service_completed_successfully

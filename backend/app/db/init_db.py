@@ -86,8 +86,20 @@ async def init_db(db_engine: AsyncEngine | None = None) -> None:
             "Migrations have more than one head; merge them (`alembic merge heads`)."
         ) from exc
 
-    async with (db_engine or engine).connect() as conn:
-        current = await conn.run_sync(_current_revision)
+    try:
+        async with (db_engine or engine).connect() as conn:
+            current = await conn.run_sync(_current_revision)
+    except Exception as exc:
+        # Includes an Azure authentication failure while fetching the Entra
+        # token (wrong AZURE_CLIENT_ID, identity not assigned, no Postgres
+        # role): without this the cause is buried in a long traceback.
+        logger.error(
+            "database_connect_failed",
+            error_type=type(exc).__name__,
+            error=str(exc)[:300],
+            hint="check DATABASE_URL, AZURE_CLIENT_ID and the Postgres role of the identity",
+        )
+        raise
 
     if current == head:
         logger.info("schema_up_to_date", revision=head)

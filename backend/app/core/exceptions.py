@@ -118,3 +118,13 @@ class SchemaOutOfDate(GlanceError):
     from its cause (a missing column breaks every `SELECT` of that table),
     so startup refuses instead. Run `alembic upgrade head` first.
     """
+
+
+class InsecureConfiguration(GlanceError):
+    """Raised at startup when `APP_ENV=production` runs with development settings.
+
+    A production container that quietly used the default JWT secret, the
+    Azurite storage key or `CORS_ORIGINS=*` would work perfectly and be wide
+    open, so nothing would ever flag it. Refusing to start is the only signal
+    that cannot be missed. The message lists every offending setting at once.
+    """
