@@ -6,6 +6,13 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+
+# Telemetry must be off for the whole suite: no exporter, no network. Set before
+# any `app` import builds the settings, and as empty strings (not deleted) so a
+# developer's `.env` cannot switch it on -- environment variables win over the
+# file. `tests/test_telemetry.py` turns it on with injected in-memory providers.
+os.environ["APPLICATIONINSIGHTS_CONNECTION_STRING"] = ""
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

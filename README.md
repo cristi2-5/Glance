@@ -80,6 +80,16 @@ Two steps run in the cloud, on Groq: reading the cover, and writing the summary.
 
 That path is still there and still maintained. Setting `AI_PROVIDER=ollama` moves both steps back onto your own machine, using Moondream and Llama 3.2, with no code change. Nothing else is sent anywhere: no other AI services, no analytics, no scraping.
 
+## Seeing what the app does
+
+The backend is instrumented with [OpenTelemetry](https://opentelemetry.io), so you can watch a scan travel through the system instead of guessing. With `docker compose up`, open the Aspire Dashboard at **http://127.0.0.1:18888** (it only listens on your own machine):
+
+- **Traces** — one trace per scan, from the app's upload through the queue to the vision model, the catalogs, the embeddings and the database. Search by `glance.job_id` to find a specific scan.
+- **Metrics** — how many scans were done or failed, how long they take, how long they waited in the queue, how often OCR had to rescue the vision model, and a counter for the one thing that must never happen (a summary built from another book's passages), which stays at zero.
+- **Logs** — the same structured logs as the console, each carrying the `trace_id` of the scan it belongs to.
+
+Nothing is sent anywhere unless you configure it: without a collector the telemetry code does nothing at all. In Azure the same data goes to Application Insights, where the alert rules live.
+
 ## Built with
 
 **Backend** — [FastAPI](https://fastapi.tiangolo.com) with async SQLAlchemy over PostgreSQL with Alembic migrations and [pgvector](https://github.com/pgvector/pgvector) for vectors, [RapidOCR](https://github.com/RapidAI/RapidOCR) on ONNX Runtime for on-device text reading (no PyTorch anywhere), [Ollama](https://ollama.com) for local embeddings, and [Groq](https://groq.com) for hosted inference. Fully type-checked with `mypy --strict`, structured logging via structlog.

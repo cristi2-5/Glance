@@ -30,12 +30,14 @@ deletes its photo, a `done` one hands it to the reader's library entry (see
 the corrected book's entry.
 """
 
+import time
 from typing import Any
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.exceptions import GlanceError, StorageUnavailable
+from app.core import metrics, telemetry
+from app.core.exceptions import CoverNotRecognized, GlanceError, StorageUnavailable
 from app.models.book import Book
 from app.models.job import Job, JobStatus
 from app.services import library_service
@@ -76,6 +78,7 @@ async def process_cover(
         blob_store: Where the job's photo lives. `None` skips the photo
             lifecycle entirely (jobs without a photo).
     """
+    started = time.monotonic()
     async with session_factory() as db:
         job = await db.get(Job, job_id)
         if job is None:
@@ -90,12 +93,17 @@ async def process_cover(
         except GlanceError as exc:
             logger.warning("cover_pipeline_failed", job_id=job_id, error=exc.message)
             await fail_job(db, job, exc.message, blob_store)
+            # An unreadable or non-book photo is a normal outcome, not a fault:
+            # counted apart so the failure-rate alert does not fire on it.
+            outcome = "unrecognized" if isinstance(exc, CoverNotRecognized) else "failed"
+            metrics.record_scan(outcome, "none", "scan", time.monotonic() - started)
             return
         except Exception:
             logger.exception("cover_pipeline_unexpected_error", job_id=job_id)
             await fail_job(
                 db, job, "An unexpected error occurred while analyzing the cover.", blob_store
             )
+            metrics.record_scan("failed", "none", "scan", time.monotonic() - started)
             return
 
         result: dict[str, Any] = {**identification.model_dump(), **EMPTY_BOOK_FIELDS}
@@ -109,6 +117,7 @@ async def process_cover(
         job.result = result
         job.status = JobStatus.DONE.value
         await db.commit()
+        metrics.record_scan("done", identification.method, "scan", time.monotonic() - started)
 
         # After the job is finished, never before: the library entry is a
         # convenience, and failing to write it must not cost the user the
@@ -141,6 +150,9 @@ async def fail_job(
         message: The user-facing error, stored on the job.
         blob_store: Where the photo lives, or `None` to leave storage alone.
     """
+    # A failed job returns normally, so without this its trace would read as a
+    # success. No-op outside a recording span.
+    telemetry.mark_error("job failed")
     photo = job.photo_blob
     job.status = JobStatus.FAILED.value
     job.error = message
@@ -207,6 +219,7 @@ async def refresh_book_data(
             `book_id` there, which is why reading it here silently never
             discarded the misidentified entry (a bug since Module 6a).
     """
+    started = time.monotonic()
     async with session_factory() as db:
         job = await db.get(Job, job_id)
         if job is None:
@@ -231,6 +244,7 @@ async def refresh_book_data(
         job.result = result
         job.status = JobStatus.DONE.value
         await db.commit()
+        metrics.record_scan("done", "manual", "refresh", time.monotonic() - started)
 
         # The first scan recorded the *misidentified* book in this user's
         # library. A correction says that book was never in their hands,
@@ -393,7 +407,8 @@ async def _fetch_book_data(
         return None
 
     try:
-        return await data_fetcher.fetch(db, title, author)
+        with telemetry.span("scan.fetch_sources", {"glance.job_id": job_id}):
+            return await data_fetcher.fetch(db, title, author)
     except Exception:
         # Deliberately broad: whatever went wrong downstream — a driver
         # error, a source bug — the job still completes with vision data.

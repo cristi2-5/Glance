@@ -81,12 +81,14 @@ import signal
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 import structlog
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core import metrics, telemetry
 from app.core.config import Settings, get_settings
 from app.core.exceptions import BlobNotFound, StorageUnavailable
 from app.core.logging import configure_logging
@@ -247,6 +249,14 @@ class _Lease:
     """
 
     message: QueuedMessage
+    #: The job kind (`scan`/`refresh`) once the body parsed; labels the metrics
+    #: of a timeout, which happens above the point where the message is parsed.
+    kind: str = "unknown"
+    #: Set once the body parsed, inside the job's span: the timeout and failure
+    #: log lines are written after the span closed, and carry these so they can
+    #: still be joined to the trace.
+    job_id: int | None = None
+    trace_id: str | None = None
 
 
 class QueueWorker:
@@ -320,13 +330,20 @@ class QueueWorker:
                 logger.error(
                     "queue_job_timed_out",
                     message_id=message.message_id,
+                    job_id=lease.job_id,
+                    trace_id=lease.trace_id,
                     dequeue_count=message.dequeue_count,
                     max_runtime_seconds=self._settings.job_max_runtime_seconds,
                 )
+                # Per attempt, in its own counter: the final outcome of a job
+                # that always hangs is `poisoned`, counted once.
+                metrics.record_attempt_timeout(lease.kind)
             else:
                 logger.exception(
                     "queue_message_failed",
                     message_id=message.message_id,
+                    job_id=lease.job_id,
+                    trace_id=lease.trace_id,
                     dequeue_count=message.dequeue_count,
                 )
         except Exception:
@@ -337,6 +354,8 @@ class QueueWorker:
             logger.exception(
                 "queue_message_failed",
                 message_id=message.message_id,
+                job_id=lease.job_id,
+                trace_id=lease.trace_id,
                 dequeue_count=message.dequeue_count,
             )
         finally:
@@ -414,6 +433,30 @@ class QueueWorker:
             await self._queue.delete(lease.message)
             return
 
+        lease.kind = job_message.kind.value
+        # One span per handled message, a child of the api request that created
+        # the job (`traceparent`), so a scan is a single timeline from the
+        # upload to the last SQL statement. `glance.job_id` is what a trace is
+        # looked up by.
+        with telemetry.continue_trace(
+            job_message.traceparent,
+            f"queue.process {self._settings.job_queue}",
+            {
+                "glance.job_id": job_message.job_id,
+                "glance.job.kind": job_message.kind.value,
+                "glance.dequeue_count": message.dequeue_count,
+                "messaging.system": "azure_queue_storage",
+                "messaging.destination.name": self._settings.job_queue,
+                "messaging.message.id": message.message_id,
+            },
+        ):
+            lease.job_id = job_message.job_id
+            lease.trace_id = telemetry.current_trace_id()
+            await self._handle_job(lease, job_message)
+
+    async def _handle_job(self, lease: _Lease, job_message: JobMessage) -> None:
+        """Runs one parsed message (poison check, duplicate check, the pipeline)."""
+        message = lease.message
         job_id = job_message.job_id
         if message.dequeue_count > self._settings.job_max_attempts:
             await self._drop_poison(lease, job_message)
@@ -447,6 +490,11 @@ class QueueWorker:
             await self._queue.delete(lease.message)
             return
 
+        if job_message.kind is JobKind.SCAN and message.dequeue_count == 1:
+            # Only the first delivery: a redelivery's wait is mostly the
+            # visibility timeout of a dead queue worker, not queueing.
+            metrics.record_queue_wait((datetime.utcnow() - job.created_at).total_seconds())
+
         logger.info(
             "queue_job_started",
             job_id=job_id,
@@ -478,12 +526,14 @@ class QueueWorker:
         """
         if job.photo_blob is None:
             await self._fail(job.id, PHOTO_MISSING_ERROR, self._blobs)
+            metrics.record_scan("failed", "none", JobKind.SCAN.value)
             return
         try:
             image = await self._blobs.get(job.photo_blob)
         except BlobNotFound:
             logger.error("queue_photo_missing", job_id=job.id, blob=job.photo_blob)
             await self._fail(job.id, PHOTO_MISSING_ERROR, self._blobs)
+            metrics.record_scan("failed", "none", JobKind.SCAN.value)
             return
 
         await process_cover(
@@ -511,6 +561,7 @@ class QueueWorker:
             # touched: it already belongs to the reader's library entry.
             logger.error("queue_refresh_without_title", job_id=job.id)
             await self._fail(job.id, POISON_ERROR, None)
+            metrics.record_scan("failed", "none", JobKind.REFRESH.value)
             return
 
         await refresh_book_data(
@@ -537,12 +588,14 @@ class QueueWorker:
             ):
                 blobs = self._blobs if job_message.kind is JobKind.SCAN else None
                 await fail_job(db, job, POISON_ERROR, blobs)
+        telemetry.mark_error("job poisoned")
         logger.error(
             "job_poisoned",
             job_id=job_message.job_id,
             kind=job_message.kind,
             dequeue_count=lease.message.dequeue_count,
         )
+        metrics.record_scan("poisoned", "none", job_message.kind.value)
         await self._queue.delete(lease.message)
 
 
@@ -581,6 +634,9 @@ async def main() -> None:
     settings.validate_for_production()
     # Also as in the api: refuse to run against a schema that is behind.
     await init_db()
+    # Traces and metrics, if an exporter is configured (a no-op otherwise).
+    if telemetry.setup_telemetry(settings, telemetry.QUEUE_WORKER_SERVICE_NAME):
+        telemetry.instrument_engine(engine)
 
     health = WorkerHealth(settings)
     worker = QueueWorker(
@@ -598,9 +654,14 @@ async def main() -> None:
         await worker.run()
     finally:
         health_server.close()
-        await health_server.wait_closed()
-        await close_storage()
-        await dispose_engine(engine)
+        try:
+            await health_server.wait_closed()
+            await close_storage()
+            await dispose_engine(engine)
+        finally:
+            # Last: flushes the final scan's spans before the container exits,
+            # even if closing the above raised.
+            telemetry.shutdown_telemetry()
 
 
 if __name__ == "__main__":

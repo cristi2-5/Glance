@@ -22,6 +22,7 @@ from groq.types.chat import (
     ChatCompletionUserMessageParam,
 )
 
+from app.core import metrics
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AIProviderUnavailable
 from app.services.ollama_client import OllamaClient, get_ollama_client
@@ -99,6 +100,14 @@ class AsyncGroqClient:
                 return choice.message.content or ""
             except _RETRYABLE_EXCEPTIONS as exc:
                 last_exception = exc
+                # Counted per failed attempt, not per call: the alert on
+                # rate limits wants to see Groq pushing back, even when a
+                # retry then succeeds.
+                metrics.record_ai_error(
+                    "groq",
+                    model,
+                    "rate_limited" if isinstance(exc, RateLimitError) else "unavailable",
+                )
                 logger.warning(
                     "groq_generate_retry",
                     model=model,
@@ -109,6 +118,7 @@ class AsyncGroqClient:
                 if attempt < attempts:
                     await asyncio.sleep(_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
             except GroqAPIStatusError as exc:
+                metrics.record_ai_error("groq", model, "bad_request")
                 logger.error("groq_generate_response_error", model=model, error=str(exc))
                 raise AIProviderUnavailable(f"Groq returned an error: {exc}") from exc
 

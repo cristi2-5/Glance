@@ -173,10 +173,13 @@ async def test_message_without_previous_book_id_stays_two_keys(queue: AzureJobQu
     assert json.loads(received.body) == {"kind": "scan", "job_id": 9}
 
 
-def test_job_message_rejects_unknown_kind_extra_fields_and_bad_ids() -> None:
+def test_job_message_rejects_unknown_kind_and_bad_ids_but_ignores_unknown_fields() -> None:
     with pytest.raises(ValueError):
         JobMessage.model_validate_json('{"kind": "explode", "job_id": 1}')
-    with pytest.raises(ValueError):
-        JobMessage.model_validate_json('{"kind": "scan", "job_id": 1, "user_email": "a@b.c"}')
+    # Unknown fields come from a newer api during a rolling deploy: ignored,
+    # not grounds for dropping the message.
+    parsed = JobMessage.model_validate_json('{"kind": "scan", "job_id": 1, "user_email": "a@b.c"}')
+    assert (parsed.kind, parsed.job_id) == (JobKind.SCAN, 1)
+    assert not hasattr(parsed, "user_email")
     with pytest.raises(ValueError):
         JobMessage.model_validate_json('{"kind": "scan", "job_id": 0}')

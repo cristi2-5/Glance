@@ -16,7 +16,8 @@ Non-negotiable consequences:
 
 1. **Never load two Ollama models simultaneously.** Set `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_KEEP_ALIVE=5m`. Reloading costs 2-4 s; swapping would cost minutes.
 2. **The full pipeline takes 30-120 s.** So heavy endpoints are **asynchronous**: they return `202 Accepted` + `job_id`, and the client polls `GET /jobs/{id}`. No Celery/Redis — the api stores the photo in Blob Storage and enqueues a message on Queue Storage, a separate **queue worker** container runs the pipeline, and a `jobs` table in the database holds the state (see "Blob + queue + queue worker" below).
-3. **We avoid PyTorch.** ~2.5 GB of disk install and hundreds of MB of RAM for something Ollama already does. Embeddings via `nomic-embed-text`, OCR via ONNX Runtime.
+3. **Budget for the local Aspire Dashboard (~150-250 MB RAM, capped by `mem_limit: 300m` in compose)** next to Ollama, Postgres and the api: stop it (`docker compose stop aspire-dashboard`) when memory is tight, telemetry then just fails to export.
+4. **We avoid PyTorch.** ~2.5 GB of disk install and hundreds of MB of RAM for something Ollama already does. Embeddings via `nomic-embed-text`, OCR via ONNX Runtime.
 
 ## Architecture
 
@@ -233,7 +234,7 @@ the answer for anything else. It now is: see the next decision.
 
 **Long jobs keep their message (heartbeat).** While a message is handled, a heartbeat task calls `JobQueue.extend` every half visibility timeout, so a slow job is not handed to a second queue worker. Azure issues a **new pop receipt on every update**, so the final delete uses the newest one (`_Lease` in `queue_worker.py`). A failed extension is logged, not fatal. On SIGTERM the queue worker finishes the message in hand; that needs the platform to wait: compose `stop_grace_period: 150s` (set on the `worker` service) and, in step 7, the Container App's termination grace period (`terminationGracePeriodSeconds`, max 600) must be at least the worst-case job. If it is killed anyway nothing is lost: the message reappears once the last extension runs out.
 
-**Accepted gaps (known, deliberately not closed).** (1) The api dying between committing the `pending` job and sending its message leaves a `pending` job nothing will pick up; the client's polling just never sees it finish. A sweeper for old `pending` jobs would close it, and was judged not worth it yet. (2) Jobs left `running` by the old `BackgroundTasks` era (before this step) have no message and never finish. (3) A crash between the `done` commit and `_record_in_library` loses that scan's library entry (the job is `done`, so the redelivered message is a duplicate and does not re-run it); the reader can rescan. All three trade a rare, visible, recoverable loss for not needing a transactional outbox.
+**Accepted gaps (known, deliberately not closed).** (1) The api dying between committing the `pending` job and sending its message leaves a `pending` job nothing will pick up; the client's polling just never sees it finish. A sweeper for old `pending` jobs would close it, and was judged not worth it yet. (2) Jobs left `running` by the old `BackgroundTasks` era (before this step) have no message and never finish. (3) A crash between the `done` commit and `_record_in_library` loses that scan's library entry (the job is `done`, so the redelivered message is a duplicate and does not re-run it); the reader can rescan. All three trade a rare, visible, recoverable loss for not needing a transactional outbox. **Monitoring consequence of (1):** an orphaned `pending` job would pin `glance.jobs.oldest_pending_age` above its alert threshold forever, so the gauge only looks at `pending` jobs created within `Settings.pending_age_window_seconds` (3600). An orphan ages out of the alert after an hour; the trade-off is that a scan *genuinely* stuck for more than an hour also stops alerting, long after the alert fired.
 
 **A correction of an old scan only uncounts that scan.** `discard_scan_artifact` removes the misidentified entry only when `scan_count == 1`; with more, the reader scanned the book again on purpose, so the entry and its photo stay and `scan_count` drops by one. `attach_photo` locks the entry (`SELECT ... FOR UPDATE`) so two queue workers cannot lose each other's photo pointer. Failing a job never deletes a photo a library entry still points at (`fail_job` checks), so a pointer never dangles.
 
@@ -317,6 +318,87 @@ A liveness probe that checked Postgres would make Azure kill and restart every h
 
 **Step 7 notes:** set the startup probe to `/health`, liveness to `/health` (api) and `:8001/health` (queue worker, a second probe port), readiness to `/ready`; set `APP_ENV=production`, `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_CLIENT_ID`, `DATABASE_AUTH=entra`.
 
+### Observability (cloud step 6)
+
+**Why.** Before this step the only signal was structlog JSON on stdout: no timings, no counts, and no way to follow one scan from the phone's upload through the queue to Groq and Postgres. The failures that matter most here produce no error at all: a scan stuck in the queue (the client just keeps polling), Groq rate-limiting us (OCR quietly saves the scan, recognition quietly gets worse), the `book_id` invariant breaking. So the app now measures itself. **OpenTelemetry** was chosen over the Application Insights SDK because it is vendor-neutral: the code is identical locally and in Azure, only the exporter differs, and the local viewer needs no Azure account.
+
+**Telemetry is a no-op unless configured.** `Settings.telemetry_exporter` is `azure_monitor` when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set, else `otlp` when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, else `None` — and then no provider is built, nothing is patched and no byte leaves the process (Application Insights wins over a stray local endpoint; an empty value counts as unset). `tests/conftest.py` blanks both variables *before* anything imports `app`, so a developer's `.env` cannot switch it on, and the `test` compose service gets no endpoint. Every helper (`telemetry.span`, `annotate`, `inject_traceparent`, the `metrics.record_*` functions) is safe to call with telemetry off; call sites never ask whether it is on.
+
+**Where the data goes.** Locally: the `aspire-dashboard` compose service (Microsoft's free OTLP viewer, pinned `9.5.2`) at `http://127.0.0.1:18888`. api and queue worker push **OTLP over HTTP** to `http://aspire-dashboard:18890` (the image's HTTP receiver; 18889 is gRPC). HTTP was chosen over gRPC deliberately: `opentelemetry-exporter-otlp-proto-http` needs no `grpcio` (a ~10 MB wheel for nothing the app uses). The receivers are not published to the host; only the UI is, bound to `127.0.0.1`, with both auth modes `Unsecured` — acceptable *only* because it is local and localhost-bound. In Azure (step 7): `azure-monitor-opentelemetry-exporter` sends traces and metrics to Application Insights. Service names `glance-api` / `glance-queue-worker` are the two boxes of the Application Map.
+
+**Providers are held in `app/core/telemetry.py`, not installed globally** (except in production). OpenTelemetry's global providers can be set once per process, which a suite that wants a fresh in-memory exporter per test cannot live with. So `setup_telemetry` keeps its providers in module state, `get_tracer()` reads them from there, the instrumentors get them as arguments, and `metrics.bind(provider)` rebuilds the instruments against them. Only the real (exporter-configured) path also publishes them globally — the one consumer that needs it is the Azure SDK tracing plugin (Blob/Queue spans), which reads the global provider and has no parameter. Tests inject `InMemorySpanExporter` / `InMemoryMetricReader` providers and call `shutdown_telemetry()` in teardown. Setup is idempotent (a second call returns `True` and changes nothing).
+
+**What is traced automatically:** incoming requests (FastAPI; the per-ASGI-message `send`/`receive` spans are excluded), outgoing HTTP (httpx: Groq, the catalogs, Wikipedia, Ollama), SQL (SQLAlchemy) and Blob/Queue calls (azure-core). **`/health` and `/ready` are excluded** (`excluded_urls`): probes every few seconds would be most of the data and of the bill. **SQLAlchemy 2.1 caveat:** `opentelemetry-instrumentation-sqlalchemy` declares support for `< 2.1` and refuses to run on the 2.1.6 this project is locked to; `instrument_engine` passes `skip_dep_check=True` (the cursor events it hooks did not change), and `test_sql_statements_are_traced` runs it against a real query so a release that breaks it fails there. Manual spans: `scan.vision`, `scan.ocr`, `scan.fetch_sources`, `rag.ingest`, `rag.retrieve`, `rag.synthesize`; `glance.job_id` / `glance.book_id` are span attributes.
+
+**One trace per scan, across the queue.** `JobMessage.traceparent` (W3C trace-context value: trace id, span id, sampled flag — an opaque id, not user data) is injected by the api route from the current request span and extracted by the queue worker, which runs the message under a `CONSUMER` span `queue.process cover-jobs` parented on it. A scan is therefore one timeline: request → enqueue → (wait) → vision → catalogs → embeddings → Postgres. The field is `exclude_none`, so with telemetry off messages stay `{"kind", "job_id"}`. **`JobMessage` is `extra="ignore"`, not `forbid`:** in a rolling deploy an older queue worker receives messages from a newer api, and with `forbid` any field it did not know (like `traceparent`) made it delete the message as malformed and leave the job `pending` forever. Known fields are still strictly validated (kind, `job_id >= 1`); an unknown one is dropped. A message without one (older api, telemetry off) simply starts its own trace. `POST /books/analyze-cover` and the correction endpoint stamp `glance.job_id` on the request span *before* uploading, so a trace can be found by job id even when the upload failed.
+
+**Failed jobs look failed in `requests`.** `telemetry.continue_trace` catches `BaseException` around the job, sets the CONSUMER span's status to ERROR (recording the exception for `Exception` subclasses; a runtime-limit cancellation is a `CancelledError`, which is not one) and re-raises. A job that *ends* `failed` or `poisoned` returns normally, so `fail_job` and `_drop_poison` call `telemetry.mark_error(...)` for the same effect. The `queue_job_timed_out` / `queue_message_failed` lines are written after the span closed, so they carry `job_id` and the `trace_id` captured inside the span, to stay joinable.
+
+**Sampling.** `_Sampler`: parent-based ratio (`OTEL_TRACES_SAMPLE_RATIO`, default 1.0 — traffic is tiny; a trace is kept or dropped whole), **plus: a root span is kept only if it is a request (`SERVER`) or a handled message (`CONSUMER`)**. Anything else with no parent is an orphan — the queue worker polling an empty queue every 1-10 s, its visibility heartbeat, the api's pending-age query — and would bury every real trace and be most of the Application Insights bill. (Found by measuring against Azurite: the idle `receive_messages` poll is a bare `GET` root span, so a name-based rule does not work.) **A client-supplied `traceparent` is honoured:** FastAPI's instrumentation continues whatever trace context an incoming request carries, so a client can choose its trace ids and, through the sampled flag, influence sampling. Harmless at ratio 1.0 with a private app; revisit (ignore inbound context, or sample on the server side only) before lowering `OTEL_TRACES_SAMPLE_RATIO`. **Live Metrics is not enabled:** this uses the bare Azure Monitor exporters, not the `azure-monitor-opentelemetry` distro that provides it.
+
+**Metrics** (`app/core/metrics.py`, one meter, `glance.` prefix; recorded at the existing decision points, no logic changed):
+
+| metric | type | attributes | answers |
+|---|---|---|---|
+| `glance.scans` | counter | `outcome` (done/failed/poisoned/unrecognized — **final** outcomes only), `method` (vision/ocr/manual/none), `kind` (scan/refresh) | how many scans, how they end, vision vs OCR |
+| `glance.scan.attempt_timeouts` | counter | `kind` | delivery attempts cancelled by the runtime limit; kept out of `glance.scans` so one hung job is one failure (its eventual `poisoned`), not one per attempt |
+| `glance.scan.duration` | histogram (s) | `outcome` | how long a scan takes |
+| `glance.queue.wait` | histogram (s) | — | upload -> a queue worker picks it up (first delivery of a scan only) |
+| `glance.ai.errors` | counter | `provider`, `model`, `reason` (rate_limited/unavailable/bad_request) | Groq 429s and outages (counted per failed attempt); the Ollama fallback records `provider=ollama` the same way (`unavailable` for connection/timeout, `bad_request` for a `ResponseError`) |
+| `glance.vision.ocr_fallback` | counter | `reason` (unconfirmed/provider_unavailable) | how often OCR saves the scan |
+| `glance.summaries` | counter | `available`, `cached` | summary success rate |
+| `glance.corpus_leaks` | counter | — | **must stay 0** — the `book_id` invariant, monitored; incremented in `vector_store._assert_no_leak` immediately before `CorpusLeak` is raised (the guard itself is untouched) |
+| `glance.jobs.oldest_pending_age` | observable gauge (s), api only | — | scans stuck in the queue (0 when none) |
+
+**The pending-age gauge is fed by a background task, not computed in its callback.** OpenTelemetry calls an observable gauge's callback from the metric reader's thread, synchronously; querying an async database from there would mean driving an `AsyncSession` from a foreign thread. So `services/job_metrics.py` runs an ordinary asyncio task in the api's event loop (started in the lifespan only when telemetry is on, cancelled on shutdown) that runs `SELECT min(created_at) ... WHERE status = 'pending' AND created_at >= now - pending_age_window_seconds` every 60 s and caches the age; the callback only reads the cache. A refresh that fails is logged and keeps the last value. The value can be up to a minute old, which is irrelevant for an alert measured in minutes. Only `pending` jobs count: a correction waiting for its refresh message is `running`.
+
+**Logs stay structlog -> stdout.** Container Apps ships stdout to Log Analytics (`ContainerAppConsoleLogs_CL`), so there is no second log pipeline. `core/logging.add_trace_context` adds `trace_id` / `span_id` (lowercase hex) to every line written inside a valid span, so a log line can be matched to its trace; outside a span nothing is added.
+
+**Cost.** Probes excluded, orphan spans dropped, tiny traffic, Azure SDK logs already at WARNING; Log Analytics gets a daily cap in step 7. Expected: inside the free monthly ingestion allowance. Image impact: `glance-backend` 237.5 MB -> 240.4 MB (+2.9 MB; 22 pinned packages added to `requirements.lock`, none moved). **Step 7 note:** set `APPLICATIONINSIGHTS_STATSBEAT_DISABLED_ALL=true` on the containers — the Azure Monitor exporter otherwise sends SDK-usage telemetry to Microsoft.
+
+**Alert definitions** (created by Bicep in step 7 with one email action group; Application Insights `customMetrics` / `requests`, Azure-only — locally the Aspire Dashboard is for looking, not alerting). Conditions are exact so step 7 does not re-derive them:
+
+| # | Alert | Condition | Eval / window | Severity |
+|---|---|---|---|---|
+| 1 | Scan failure rate | `sum(glance.scans where outcome in (failed, poisoned)) / sum(glance.scans) > 0.20` and at least 5 scans (`unrecognized` — a photo that is not a readable cover — is a normal outcome: in the denominator, never the numerator; `attempt_timeouts` is a separate metric, so a hung job counts once, as `poisoned`) | every 5 min over 15 min | 2 |
+| 2 | A scan waited too long | `max(glance.jobs.oldest_pending_age) > 300` (s) | every 1 min over 5 min | 2 |
+| 3 | `book_id` invariant broken | `sum(glance.corpus_leaks) > 0` | every 1 min over 5 min | 0 (any occurrence) |
+| 4 | api 5xx rate | `requests` of `cloud_RoleName == "glance-api"` with `resultCode` 5xx `/ all > 0.05` and at least 20 requests | every 5 min over 10 min | 2 |
+| 5 | Groq rate-limiting | `sum(glance.ai.errors where reason == "rate_limited") > 10` | every 5 min over 15 min | 3 |
+| 6 | Budget | Cost Management budget alert (already planned) — not an Application Insights rule | — | — |
+| 7 | AI provider rejecting requests (silent degradation) | `sum(glance.ai.errors where reason == "bad_request") > 0` — a retired Groq model or a wrong `reasoning_effort` is a non-retryable 400 on every call, which `VisionService` hides by falling back to OCR | every 5 min over 15 min | 1 |
+
+Alert 2 must aggregate with `max` across replicas, never `sum` (each api replica reports the same global number; summing would multiply it). Alert 2 sits at 300 s because the visibility timeout is 300 s: a scan pending longer than that has also outlived one redelivery window. Alert 3 is severity 0 because it is the one failure that produces a fluent, cited, wrong summary.
+
+**KQL cheat-sheet** (Application Insights; custom attributes land in `customDimensions`, always as strings):
+
+```kusto
+// slowest scans (the queue.process CONSUMER span is a `requests` row)
+requests | where name == "queue.process cover-jobs" | top 20 by duration desc
+| project timestamp, duration, operation_Id, job = tostring(customDimensions["glance.job_id"])
+
+// scan outcomes by method, last day
+customMetrics | where name == "glance.scans" and timestamp > ago(1d)
+| extend outcome = tostring(customDimensions.outcome), method = tostring(customDimensions.method)
+| summarize scans = sum(valueSum) by outcome, method
+
+// how often OCR had to take over, and why (provider_unavailable = Groq down/rejecting)
+customMetrics | where name == "glance.vision.ocr_fallback" and timestamp > ago(1d)
+| extend reason = tostring(customDimensions.reason)
+| summarize fallbacks = sum(valueSum) by reason, bin(timestamp, 1h)
+
+// failures by reason (the user-facing message is in the log line)
+ContainerAppConsoleLogs_CL | where Log_s has "cover_pipeline_failed"
+| extend j = parse_json(Log_s) | summarize count() by tostring(j.error)
+
+// everything that happened for one job: find its trace, then walk it
+requests | where tostring(customDimensions["glance.job_id"]) == "42" | project operation_Id
+union requests, dependencies, exceptions | where operation_Id == "<operation_Id>" | order by timestamp asc
+
+// the log lines of that trace
+ContainerAppConsoleLogs_CL | where Log_s has "<operation_Id>"
+```
+
 ### Dual-purpose embeddings
 
 The vectors generated when a book is ingested serve both RAG (Module 5) and recommendations (Module 6). We don't build two embedding pipelines.
@@ -355,7 +437,8 @@ The vectors generated when a book is ingested serve both RAG (Module 5) and reco
 | Testing | `pytest` + `pytest-asyncio` + `httpx.AsyncClient` + `respx` | zero real network calls in the test suite |
 | Formatting / linting | `black` + `ruff` | before every commit |
 | Type checking | `mypy` (strict) | no unjustified `Any` |
-| Logging | `structlog` | never `print()` in production code |
+| Logging | `structlog` | never `print()` in production code; lines inside a span carry `trace_id`/`span_id` |
+| Observability | `opentelemetry-sdk` + `-exporter-otlp-proto-http` + `-instrumentation-fastapi/httpx/sqlalchemy` + `azure-core-tracing-opentelemetry` + `azure-monitor-opentelemetry-exporter` | traces + metrics; no-op unless configured; Aspire Dashboard locally, Application Insights in Azure (step 6) |
 
 ## Directory structure (backend)
 
@@ -368,7 +451,9 @@ backend/
 │   │   ├── security.py             # JWT, password hashing
 │   │   ├── exceptions.py           # custom exceptions + handlers
 │   │   ├── identity.py             # managed-identity credential factory + Postgres token provider
-│   │   └── logging.py              # structlog setup
+│   │   ├── telemetry.py            # OpenTelemetry setup (no-op unless configured), sampler, span helpers, traceparent
+│   │   ├── metrics.py              # the `glance.*` instruments and record_* functions
+│   │   └── logging.py              # structlog setup (+ trace_id/span_id processor)
 │   ├── api/
 │   │   ├── deps.py                 # dependencies (current_user, db session)
 │   │   └── routes/
@@ -400,6 +485,7 @@ backend/
 │   │   ├── rag_service.py          # ingest, retrieve, synthesize, verify citations
 │   │   ├── library_service.py      # history, status, ratings, derived preferences
 │   │   ├── journal_service.py      # dated reading notes, owned via the library entry
+│   │   ├── job_metrics.py          # oldest-pending-scan age, cached for the observable gauge
 │   │   └── recommendation_service.py  # profile vector, catalog discovery, ranking, explanations
 │   ├── workers/
 │   │   ├── cover_pipeline.py       # the full job: OCR → fetch → ingest → summary; photo lifecycle
@@ -425,7 +511,7 @@ backend/
 Repo root, next to `backend/` and `frontend/`:
 
 ```
-docker-compose.yml                  # runs `postgres`, one-shot `migrate`, `api`, `ollama` (+ `test`, profile `test`), like the future cloud layout
+docker-compose.yml                  # runs `postgres`, `azurite`, one-shot `migrate`, `api`, `worker` (queue worker), `ollama`, `aspire-dashboard` (+ `test`, profile `test`), like the future cloud layout
 postgres/
 └── init/01-create-test-db.sql      # creates `glance_test` for host-side pytest
 ollama/
@@ -514,6 +600,7 @@ docker compose up -d postgres azurite   # (repo root) required before `pytest`
 docker compose up --build          # (repo root) run postgres, azurite, migrate, api, worker (queue worker), ollama; needs backend/.env
 docker compose --profile test run --rm test
                                    # (repo root) the suite inside Linux, on the locked versions
+# Aspire Dashboard (traces, metrics, structured logs): http://127.0.0.1:18888 -- started by `docker compose up`
 ```
 
 ## Code conventions

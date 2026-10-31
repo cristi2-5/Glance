@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Response, UploadFile, status
 
 from app.api.deps import BlobStoreDep, CurrentUser, DbSession, JobQueueDep, RagServiceDep
+from app.core import telemetry
 from app.core.config import get_settings
 from app.core.exceptions import (
     FileTooLarge,
@@ -115,10 +116,15 @@ async def analyze_cover(
     db.add(job)
     await db.commit()
     await db.refresh(job)
+    # Stamped before the upload so a trace can be found by job id even when
+    # the upload or the enqueue is what failed.
+    telemetry.annotate(**{"glance.job_id": job.id})
 
     try:
         await blob_store.put(photo_blob, prepared.jpeg_bytes)
-        await job_queue.send(JobMessage(kind=JobKind.SCAN, job_id=job.id))
+        await job_queue.send(
+            JobMessage(kind=JobKind.SCAN, job_id=job.id, traceparent=telemetry.inject_traceparent())
+        )
     except StorageUnavailable:
         await fail_job(db, job, "The scan could not be queued. Please try again.", blob_store)
         raise

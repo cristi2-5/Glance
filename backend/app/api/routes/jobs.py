@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.deps import CurrentUser, DbSession, JobQueueDep
+from app.core import telemetry
 from app.core.exceptions import AccessForbidden, InvalidData, ResourceNotFound, StorageUnavailable
 from app.models.job import Job, JobStatus
 from app.schemas.job import JobPublic
@@ -115,10 +116,16 @@ async def correct_job(
     job.status = JobStatus.RUNNING.value
     await db.commit()
     await db.refresh(job)
+    telemetry.annotate(**{"glance.job_id": job_id})
 
     try:
         await job_queue.send(
-            JobMessage(kind=JobKind.REFRESH, job_id=job_id, previous_book_id=previous_book_id)
+            JobMessage(
+                kind=JobKind.REFRESH,
+                job_id=job_id,
+                previous_book_id=previous_book_id,
+                traceparent=telemetry.inject_traceparent(),
+            )
         )
     except StorageUnavailable:
         # Nothing will ever pick this job up: do not leave it `running`

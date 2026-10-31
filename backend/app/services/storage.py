@@ -68,7 +68,11 @@ class JobMessage(BaseModel):
     and the queue worker drops it instead of crashing on it forever.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # `ignore`, not `forbid`: during a rolling deploy an older queue worker
+    # receives messages from a newer api. With `forbid`, any field it does not
+    # know (like `traceparent` was) made it delete the message as malformed and
+    # leave the job `pending` forever. Known fields stay strictly validated.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     kind: JobKind
     job_id: int = Field(ge=1)
@@ -77,6 +81,11 @@ class JobMessage(BaseModel):
     # so the message is the one place it survives; without it the misread
     # book's untouched library entry was never discarded.
     previous_book_id: int | None = Field(default=None, ge=1)
+    # W3C `traceparent` of the api request that created the job, so the queue
+    # worker's span joins the same trace (cloud step 6). An opaque id -- trace
+    # id, span id, sampled flag -- not user data. `None` (and therefore absent
+    # from the JSON, see `exclude_none` in `send`) whenever telemetry is off.
+    traceparent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -345,8 +354,9 @@ class AzureJobQueue:
         """Enqueues a message. See `JobQueue.send`."""
         client = await self._queue_client()
         try:
-            # `exclude_none`: a scan message stays `{"kind", "job_id"}`; only a
-            # refresh carries `previous_book_id`.
+            # `exclude_none`: a scan message stays `{"kind", "job_id"}` with
+            # telemetry off; only a refresh carries `previous_book_id`, and
+            # `traceparent` appears only when the api is tracing.
             await client.send_message(message.model_dump_json(exclude_none=True))
         except AzureError as exc:
             logger.warning("queue_send_failed", job_id=message.job_id, error=str(exc))

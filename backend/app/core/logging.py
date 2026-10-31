@@ -8,6 +8,33 @@ import logging
 import sys
 
 import structlog
+from opentelemetry import trace
+
+
+def add_trace_context(
+    _logger: object, _method_name: str, event_dict: structlog.typing.EventDict
+) -> structlog.typing.EventDict:
+    """Adds `trace_id` / `span_id` to a log line written inside a span.
+
+    Logs stay structlog JSON on stdout (Container Apps ships that to Log
+    Analytics as-is); these two fields are what lets a log line be matched to
+    its trace in Application Insights, or the Aspire Dashboard, and back.
+    Outside a span -- or with telemetry off, when no span is ever current --
+    nothing is added, so the lines are unchanged.
+
+    Args:
+        _logger: Unused (structlog's processor signature).
+        _method_name: Unused (structlog's processor signature).
+        event_dict: The log event being built.
+
+    Returns:
+        The same event, with the two ids as lowercase hex when a valid span is current.
+    """
+    context = trace.get_current_span().get_span_context()
+    if context.is_valid:
+        event_dict["trace_id"] = trace.format_trace_id(context.trace_id)
+        event_dict["span_id"] = trace.format_span_id(context.span_id)
+    return event_dict
 
 
 def configure_logging(debug: bool = False) -> None:
@@ -45,6 +72,7 @@ def configure_logging(debug: bool = False) -> None:
     # that the two should not be combined.
     processors: list[structlog.typing.Processor] = [
         structlog.contextvars.merge_contextvars,
+        add_trace_context,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),

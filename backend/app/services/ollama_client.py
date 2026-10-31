@@ -13,6 +13,7 @@ import httpx
 import structlog
 from ollama import AsyncClient, ResponseError
 
+from app.core import metrics
 from app.core.config import Settings, get_settings
 from app.core.exceptions import OllamaUnavailable
 
@@ -91,6 +92,7 @@ class AsyncOllamaClient:
                 return response.response or ""
             except _RETRYABLE_EXCEPTIONS as exc:
                 last_exception = exc
+                metrics.record_ai_error("ollama", model, "unavailable")
                 logger.warning(
                     "ollama_generate_retry",
                     model=model,
@@ -101,6 +103,7 @@ class AsyncOllamaClient:
                 if attempt < attempts:
                     await asyncio.sleep(_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
             except ResponseError as exc:
+                metrics.record_ai_error("ollama", model, "bad_request")
                 logger.error("ollama_generate_response_error", model=model, error=str(exc))
                 raise OllamaUnavailable(f"Ollama returned an error: {exc}") from exc
 

@@ -51,6 +51,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import metrics
 from app.models.vector import BookChunk
 from app.services.chunking import Chunk
 
@@ -317,6 +318,7 @@ def _assert_no_leak(book_id: int, chunks: list[RetrievedChunk]) -> None:
         foreign_chunk_ids=[chunk.id for chunk in foreign],
         foreign_book_ids=sorted({chunk.book_id for chunk in foreign}),
     )
+    metrics.record_corpus_leak()
     raise CorpusLeak(
         f"Retrieval for book {book_id} returned {len(foreign)} chunk(s) from another book. "
         "The book_id filter is not working; refusing to build a summary."

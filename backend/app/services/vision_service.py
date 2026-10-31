@@ -18,6 +18,7 @@ from typing import Literal
 import structlog
 from rapidfuzz import fuzz
 
+from app.core import metrics, telemetry
 from app.core.config import Settings, get_settings
 from app.core.exceptions import CoverNotRecognized, ExternalServiceUnavailable
 from app.schemas.vision import CoverIdentification
@@ -238,7 +239,8 @@ class VisionService:
         vision_result: CoverIdentification | None
         provider_error: ExternalServiceUnavailable | None = None
         try:
-            vision_result = await self._identify_via_vision_model(prepared.jpeg_bytes)
+            with telemetry.span("scan.vision", {"glance.model": self._settings.vision_model}):
+                vision_result = await self._identify_via_vision_model(prepared.jpeg_bytes)
         except CoverNotRecognized:
             vision_result = None
         except ExternalServiceUnavailable as exc:
@@ -255,7 +257,13 @@ class VisionService:
         ):
             return vision_result
 
-        ocr_result = await self._identify_via_ocr_fallback(prepared.jpeg_bytes)
+        # OCR is running because the model's answer was missing, unreachable or
+        # not confirmed by a catalog; which of those is the useful signal.
+        metrics.record_ocr_fallback(
+            "provider_unavailable" if provider_error is not None else "unconfirmed"
+        )
+        with telemetry.span("scan.ocr"):
+            ocr_result = await self._identify_via_ocr_fallback(prepared.jpeg_bytes)
 
         if ocr_result is None:
             if provider_error is not None:

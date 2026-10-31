@@ -28,6 +28,17 @@ dependencies = [
     "azure-storage-queue>=12.12,<13.0",
     "azure-identity>=1.19,<2.0",
     "aiohttp>=3.10,<4.0",
+    # Observability (cloud step 6). The OpenTelemetry API/SDK/exporter move
+    # together (1.x); the instrumentation packages are 0.x betas versioned
+    # against them (0.66b0 pairs with 1.45), hence the tight upper bound.
+    "opentelemetry-api>=1.45,<2.0",
+    "opentelemetry-sdk>=1.45,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45,<2.0",
+    "opentelemetry-instrumentation-fastapi>=0.66b0,<0.67",
+    "opentelemetry-instrumentation-httpx>=0.66b0,<0.67",
+    "opentelemetry-instrumentation-sqlalchemy>=0.66b0,<0.67",
+    "azure-core-tracing-opentelemetry>=1.0.0b12,<2.0",
+    "azure-monitor-opentelemetry-exporter>=1.0.0b50,<2.0",
 ]
 
 [project.optional-dependencies]

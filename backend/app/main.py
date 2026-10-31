@@ -1,6 +1,7 @@
 """Entry point of the Glance FastAPI application."""
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -13,11 +14,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes import auth, books, jobs, users
+from app.core import metrics, telemetry
 from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.db.init_db import init_db
-from app.db.session import dispose_engine, engine, get_db
+from app.db.session import AsyncSessionLocal, dispose_engine, engine, get_db
+from app.services.job_metrics import run_pending_age_monitor
 from app.services.storage import close_storage
 
 logger = structlog.get_logger(__name__)
@@ -49,11 +52,31 @@ def create_app(app_settings: Settings) -> FastAPI:
         # narrower way.
         app_settings.validate_for_production()
         await init_db()
-        yield
-        # Close the Blob/Queue HTTP sessions (created lazily on first use) and
-        # the database pool (plus its managed-identity credential, if any).
-        await close_storage()
-        await dispose_engine(engine)
+        # The oldest-pending-scan gauge is fed by a task of this event loop
+        # (see `job_metrics` for why not from the gauge callback); there is
+        # nothing to feed when telemetry is off.
+        monitor = (
+            asyncio.create_task(run_pending_age_monitor(AsyncSessionLocal))
+            if telemetry.is_enabled()
+            else None
+        )
+        try:
+            yield
+        finally:
+            if monitor is not None:
+                monitor.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await monitor
+            try:
+                # Close the Blob/Queue HTTP sessions (created lazily on first
+                # use) and the database pool (plus its managed-identity
+                # credential, if any).
+                await close_storage()
+                await dispose_engine(engine)
+            finally:
+                # Last, so the spans of the shutdown itself are flushed too --
+                # and always, even when closing the above raised.
+                telemetry.shutdown_telemetry()
 
     # In production the api publishes no map of itself: /docs, /redoc and
     # /openapi.json are removed.
@@ -75,6 +98,13 @@ def create_app(app_settings: Settings) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Cloud step 6: with an exporter configured (or providers injected by a
+    # test) this traces requests, SQL and outgoing HTTP; otherwise it is a no-op.
+    if telemetry.setup_telemetry(app_settings, telemetry.API_SERVICE_NAME):
+        telemetry.instrument_engine(engine)
+        telemetry.instrument_app(app)
+        metrics.register_pending_age_gauge()
 
     register_exception_handlers(app)
     app.include_router(auth.router)

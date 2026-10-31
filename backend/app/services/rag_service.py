@@ -44,6 +44,7 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import metrics, telemetry
 from app.core.config import Settings, get_settings
 from app.core.exceptions import ExternalServiceUnavailable
 from app.models.book import Book
@@ -169,10 +170,12 @@ class RagService:
         cached = _load_cached_summary(book)
         if cached is not None:
             logger.info("summary_cache_hit", book_id=book.id)
+            metrics.record_summary(available=cached.available, cached=True)
             return cached
 
         if not book.text_sources:
             logger.info("summary_no_corpus", book_id=book.id)
+            metrics.record_summary(available=False, cached=False)
             return BookSummary(book_id=book.id, available=False)
 
         # Re-ingest when the store has nothing for this book. Covers the
@@ -180,7 +183,8 @@ class RagService:
         # one — `_load_cached_summary` has already rejected the stale
         # summary by that point, so arriving here means a rebuild is due.
         if await self._store.count_for_book(db, book.id) == 0:
-            await self.ingest(db, book)
+            with telemetry.span("rag.ingest", {"glance.book_id": book.id}):
+                await self.ingest(db, book)
             # Commit the corpus now rather than leaving it to
             # `_store_summary`: that only commits an *available* summary,
             # and the model call below is slow and can fail. The previous
@@ -188,13 +192,17 @@ class RagService:
             # (and re-embedded next time) whenever generation went wrong.
             await db.commit()
 
-        chunks = await self._retrieve(db, book.id)
+        with telemetry.span("rag.retrieve", {"glance.book_id": book.id}):
+            chunks = await self._retrieve(db, book.id)
         if not chunks:
             logger.info("summary_no_chunks_retrieved", book_id=book.id)
+            metrics.record_summary(available=False, cached=False)
             return BookSummary(book_id=book.id, available=False)
 
-        summary = await self._synthesize(book, chunks)
+        with telemetry.span("rag.synthesize", {"glance.book_id": book.id}):
+            summary = await self._synthesize(book, chunks)
         await _store_summary(db, book, summary)
+        metrics.record_summary(available=summary.available, cached=False)
         return summary
 
     async def _retrieve(self, db: AsyncSession, book_id: int) -> list[RetrievedChunk]:

@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import make_url
 
@@ -115,6 +115,10 @@ class Settings(BaseSettings):
     # extending the message's visibility (so it reappears and is retried).
     # Without the limit a hung pipeline would hold its message forever.
     job_max_runtime_seconds: int = 600
+    # `glance.jobs.oldest_pending_age` only looks at `pending` jobs created this
+    # recently, so an orphaned one (api died before enqueueing) ages out of the
+    # "scan waited too long" alert instead of pinning it forever.
+    pending_age_window_seconds: int = Field(default=3600, ge=1)
     # Port of the queue worker's tiny HTTP liveness endpoint (`/health`).
     queue_worker_health_port: int = 8001
     # The polling loop must tick at least this often to count as alive. It has
@@ -198,6 +202,24 @@ class Settings(BaseSettings):
     # off for these calls, they need more headroom than a small non-
     # reasoning local model (Ollama's `ollama_vision_num_predict`) would.
     groq_max_tokens: int = 1024
+
+    # Observability (cloud step 6)
+    #
+    # Telemetry is a no-op unless one of these two is set, so tests and plain
+    # development make no network call and carry no overhead. In Azure the
+    # connection string (Application Insights) wins; locally the OTLP endpoint
+    # points at the Aspire Dashboard container. An empty value counts as unset.
+    applicationinsights_connection_string: str | None = None
+    # Base URL of an OTLP/HTTP receiver, e.g. http://aspire-dashboard:18890
+    # (the exporters append /v1/traces and /v1/metrics).
+    otel_exporter_otlp_endpoint: str | None = None
+    # Share of new traces recorded (children always follow their parent's
+    # decision, so a scan is never half-recorded). Traffic is tiny, hence 1.0;
+    # lower it if the Application Insights bill ever says so.
+    otel_traces_sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    # How often metrics are pushed. 60 s is plenty for alerts; compose lowers it
+    # so the dashboard fills in while you watch.
+    otel_metric_export_interval_seconds: int = Field(default=60, ge=1)
 
     # Upload
     max_upload_size_bytes: int = 8 * 1024 * 1024  # 8 MB
@@ -396,6 +418,19 @@ class Settings(BaseSettings):
     def llm_model(self) -> str:
         """The summary-generation model name for the currently active `ai_provider`."""
         return self.groq_llm_model if self.ai_provider == "groq" else self.ollama_llm_model
+
+    @property
+    def telemetry_exporter(self) -> Literal["azure_monitor", "otlp"] | None:
+        """Where telemetry goes, or `None` when it is switched off.
+
+        Application Insights wins over OTLP when both are set: it is the
+        production destination, and a stray local endpoint must not divert it.
+        """
+        if self.applicationinsights_connection_string:
+            return "azure_monitor"
+        if self.otel_exporter_otlp_endpoint:
+            return "otlp"
+        return None
 
     @model_validator(mode="after")
     def _check_health_timing(self) -> "Settings":
