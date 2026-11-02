@@ -18,6 +18,8 @@ import { BookCover } from '@/components/book/BookCover'
 import { RatingStars } from '@/components/book/RatingStele'
 import { ReadingStatusPicker } from '@/components/book/ReadingStatusPicker'
 import { SummarySection } from '@/components/book/SummarySection'
+import { DidYouKnow } from '@/components/scan/DidYouKnow'
+import { BackRow } from '@/components/ui/BackRow'
 import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
 import { Chip } from '@/components/ui/Chip'
@@ -76,7 +78,11 @@ export default function RezultatScanareScreen() {
     // A job that is running *and* already carries a correction is
     // re-fetching metadata for the title the user just typed — a different
     // wait, worth naming, since the cover has already been read.
-    const isRefetchingCorrection = job.status === 'running' && job.result?.['corrected'] === true
+    // A typed search starts the same way: the title is known, only the
+    // catalog data is pending, so the photo wording would be a lie.
+    const isRefetchingCorrection =
+      job.status === 'running' &&
+      (job.result?.['corrected'] === true || job.result?.['searched'] === true)
     return <InProgressState refetchingCorrection={isRefetchingCorrection} status={job.status} />
   }
 
@@ -100,16 +106,7 @@ export default function RezultatScanareScreen() {
 
   return (
     <Screen scrollable>
-      <View style={styles.bar}>
-        <Pressable
-          accessibilityLabel="Back"
-          accessibilityRole="button"
-          hitSlop={12}
-          onPress={() => router.replace('/')}
-        >
-          <Feather color={colors.ink} name="arrow-left" size={24} />
-        </Pressable>
-      </View>
+      <BackRow label="Home" onPress={() => router.replace('/')} />
 
       {isDemo ? (
         <View style={styles.demoWarning}>
@@ -126,8 +123,14 @@ export default function RezultatScanareScreen() {
           <BookCover size="hero" title={analysis.title} url={analysis.cover_url} />
 
           <View style={styles.identityText}>
-            <Text style={styles.bookTitle}>{analysis.title}</Text>
-            {analysis.author ? <Text style={styles.author}>by {analysis.author}</Text> : null}
+            <Text {...textFit.bookTitleHero} style={styles.bookTitle}>
+              {analysis.title}
+            </Text>
+            {analysis.author ? (
+              <Text {...textFit.author} style={styles.author}>
+                by {analysis.author}
+              </Text>
+            ) : null}
 
             {analysis.average_rating !== null ? (
               <View style={styles.ratingRow}>
@@ -143,8 +146,12 @@ export default function RezultatScanareScreen() {
         </View>
 
         <View style={styles.metaRow}>
+          {/* `corrected` first: a corrected lookup carries both flags, and
+              the correction is the newer word on which book this is. */}
           {analysis.corrected ? (
             <Text style={styles.correctedCaption}>Corrected by you</Text>
+          ) : analysis.searched ? (
+            <Text style={styles.correctedCaption}>Found by title</Text>
           ) : (
             <Chip
               label={`Confidence ${Math.round(analysis.confidence * 100)}%`}
@@ -153,8 +160,24 @@ export default function RezultatScanareScreen() {
           )}
         </View>
 
-        {!analysis.corrected ? (
+        {!analysis.corrected && !analysis.searched ? (
           <Text style={styles.methodCaption}>{METHOD_CAPTION[analysis.method]}</Text>
+        ) : null}
+
+        {/* Always available: the model can be confidently wrong, and
+            `needs_review` only catches the cases it is unsure about. Hidden
+            when that card is shown, which offers the same fix. */}
+        {!isDemo && !analysis.needs_review ? (
+          <Pressable
+            accessibilityRole="link"
+            hitSlop={space[2]}
+            onPress={() => router.push(`/scan/correct/${jobId}`)}
+            style={styles.wrongBook}
+          >
+            <Text {...textFit.chip} style={styles.wrongBookLabel}>
+              Wrong book? Edit title or author
+            </Text>
+          </Pressable>
         ) : null}
 
         {analysis.categories.length > 0 ? (
@@ -169,12 +192,14 @@ export default function RezultatScanareScreen() {
 
         {analysis.needs_review ? (
           <View style={styles.needsReviewCard}>
-            <Feather color={colors.accent} name="help-circle" size={18} />
-            <View style={styles.needsReviewText}>
-              <Text style={styles.needsReviewTitle}>Not fully sure about this one</Text>
-              <Text style={styles.needsReviewBody}>
-                The title or author might not be quite right. You can fix it by hand.
-              </Text>
+            <View style={styles.needsReviewHeader}>
+              <Feather color={colors.accent} name="help-circle" size={18} />
+              <View style={styles.needsReviewText}>
+                <Text style={styles.needsReviewTitle}>Not fully sure about this one</Text>
+                <Text style={styles.needsReviewBody}>
+                  The title or author might not be quite right. You can fix it by hand.
+                </Text>
+              </View>
             </View>
             <Button
               label="Fix the title"
@@ -285,6 +310,7 @@ function InProgressState({
         <Text style={styles.stateText}>
           Finding the cover and details for the title you entered…
         </Text>
+        <DidYouKnow />
       </Screen>
     )
   }
@@ -299,9 +325,8 @@ function InProgressState({
       <ActivityIndicator color={colors.accent} size="large" />
       <Text style={styles.stateTitle}>Analyzing</Text>
       <Text style={styles.stateText}>{message}</Text>
-      <Text style={styles.stateNote}>
-        On a laptop without a dedicated graphics card, the full step can take up to two minutes.
-      </Text>
+      <Text style={styles.stateNote}>This usually takes under a minute.</Text>
+      <DidYouKnow />
     </Screen>
   )
 }
@@ -320,9 +345,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.md,
-  },
-  bar: {
-    marginBottom: spacing.lg,
   },
   demoWarning: {
     flexDirection: 'row',
@@ -347,6 +369,7 @@ const styles = StyleSheet.create({
   },
   identityText: {
     flex: 1,
+    minWidth: 0,
     gap: spacing.sm,
     justifyContent: 'center',
   },
@@ -405,16 +428,30 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   needsReviewCard: {
+    gap: space[3],
+    padding: space[3],
+    backgroundColor: colors.highlightSoft,
+    borderRadius: radius.md,
+  },
+  needsReviewHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: spacing.sm,
-    padding: spacing.md,
-    backgroundColor: colors.accentSoft,
-    borderRadius: radius.md,
+    gap: space[2],
+  },
+  wrongBook: {
+    alignSelf: 'flex-start',
+    justifyContent: 'center',
+    minHeight: space[9] + space[2],
+  },
+  wrongBookLabel: {
+    ...typography.label,
+    color: colors.indigo,
+    textDecorationLine: 'underline',
   },
   needsReviewText: {
     flex: 1,
-    gap: 2,
+    minWidth: 0,
+    gap: space[1],
   },
   needsReviewTitle: {
     ...typography.label,
@@ -425,7 +462,7 @@ const styles = StyleSheet.create({
     color: colors.inkMuted,
   },
   needsReviewButton: {
-    alignSelf: 'center',
+    alignSelf: 'stretch',
   },
   stateTitle: {
     ...typography.displaySmall,

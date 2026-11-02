@@ -42,47 +42,63 @@ export function ReadingStatusPicker({ bookId }: ReadingStatusPickerProps) {
   const current = entry?.status ?? 'scanned'
 
   return (
-    <View style={styles.row}>
-      {OPTIONS.map((option) => {
-        const active = current === option.value
-        return (
-          <Pressable
-            accessibilityLabel={option.label}
-            accessibilityRole="button"
-            accessibilityState={{ selected: active }}
-            disabled={update.isPending}
-            key={option.value}
-            onPress={() => {
-              update.mutate({
-                bookId,
-                update: { status: active ? 'scanned' : option.value },
-              })
-            }}
-            style={({ pressed }) => [
-              styles.pill,
-              active ? styles.pillActive : null,
-              pressed ? styles.pressed : null,
-            ]}
-          >
-            <Text {...textFit.chip} style={[styles.label, active ? styles.labelActive : null]}>
-              {option.label}
-            </Text>
-          </Pressable>
-        )
-      })}
+    <View style={styles.block}>
+      <View style={styles.row}>
+        {OPTIONS.map((option) => {
+          const active = current === option.value
+          return (
+            <Pressable
+              accessibilityLabel={option.label}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              disabled={update.isPending}
+              key={option.value}
+              onPress={() => {
+                update.mutate({
+                  bookId,
+                  update: { status: active ? 'scanned' : option.value },
+                })
+              }}
+              style={({ pressed }) => [
+                styles.pill,
+                active ? styles.pillActive : null,
+                pressed ? styles.pressed : null,
+              ]}
+            >
+              <Text {...textFit.chip} style={[styles.label, active ? styles.labelActive : null]}>
+                {option.label}
+              </Text>
+            </Pressable>
+          )
+        })}
+      </View>
+      {update.error ? (
+        <Text {...textFit.prose} style={styles.error}>
+          {update.error.message}
+        </Text>
+      ) : null}
     </View>
   )
 }
 
 const styles = StyleSheet.create({
+  block: {
+    gap: space[2],
+  },
+  error: {
+    ...typography.caption,
+    color: colors.danger,
+  },
   row: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: space[2],
   },
   pill: {
+    // 44 pt: Apple's minimum comfortable tap target.
+    minHeight: space[9] + space[2],
+    justifyContent: 'center',
     paddingHorizontal: space[4],
-    paddingVertical: space[2],
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,

@@ -68,6 +68,8 @@ export function interpretResult(result: Record<string, unknown> | null): Display
       average_rating: typeof raw.average_rating === 'number' ? raw.average_rating : null,
       ratings_count: typeof raw.ratings_count === 'number' ? raw.ratings_count : null,
       source_count: typeof raw.source_count === 'number' ? raw.source_count : 0,
+      // Absent on results from before typed search existed.
+      searched: raw.searched === true,
     },
   }
 }

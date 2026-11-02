@@ -181,7 +181,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.espresso,
     borderRadius: radius.pill,
     paddingHorizontal: space[4],
-    paddingVertical: space[2],
+    // 44 pt tap target.
+    minHeight: space[9] + space[2],
+    justifyContent: 'center',
   },
   actionPressed: {
     backgroundColor: colors.espressoPressed,

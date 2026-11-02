@@ -12,7 +12,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera'
 import * as Haptics from 'expo-haptics'
 import { useRouter } from 'expo-router'
 import { useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { normalizeError } from '@/api/errors'
@@ -20,7 +20,7 @@ import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
 import { Screen } from '@/components/ui/Screen'
 import { useAnalyzeCover } from '@/features/scan/hooks'
-import { colors, radius, spacing, typography } from '@/theme'
+import { colors, radius, space, spacing, typography } from '@/theme'
 
 export default function CameraScreen() {
   const router = useRouter()
@@ -73,15 +73,21 @@ export default function CameraScreen() {
     return (
       <Screen contentStyle={styles.centered}>
         <Feather color={colors.inkFaint} name="camera-off" size={40} />
-        <Text style={styles.permissionTitle}>I need the camera</Text>
+        <Text style={styles.permissionTitle}>Camera access needed</Text>
         <Text style={styles.permissionText}>
-          Glance only uses the camera to photograph the cover. The image never leaves your local
-          network.
+          Glance only uses the camera to photograph the cover. The photo is sent to Glance&apos;s
+          server and stored privately; only you can see it.
         </Text>
         <Button
-          label="Allow access"
+          // After one denial iOS never shows the system prompt again, so asking
+          // again would do nothing; the only way forward is the Settings app.
+          label={permission.canAskAgain ? 'Allow access' : 'Open Settings'}
           onPress={() => {
-            void requestPermission()
+            if (permission.canAskAgain) {
+              void requestPermission()
+            } else {
+              void Linking.openSettings()
+            }
           }}
           style={styles.permissionButton}
         />
@@ -98,7 +104,7 @@ export default function CameraScreen() {
         <Pressable
           accessibilityLabel="Close camera"
           accessibilityRole="button"
-          hitSlop={12}
+          hitSlop={space[2]}
           onPress={() => router.back()}
           style={styles.closeButton}
         >
@@ -175,8 +181,8 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   closeButton: {
-    width: 40,
-    height: 40,
+    width: space[9],
+    height: space[9],
     borderRadius: radius.pill,
     backgroundColor: colors.overlay,
     alignItems: 'center',

@@ -20,3 +20,11 @@ export const correctionSchema = z.object({
 })
 
 export type CorrectionData = z.infer<typeof correctionSchema>
+
+/**
+ * The typed-search form has exactly the correction form's fields and limits
+ * (the backend reuses `CorrectionRequest`'s validation for `/books/lookup`),
+ * so it shares the schema rather than copying it.
+ */
+export const lookupSchema = correctionSchema
+export type LookupData = CorrectionData

@@ -1,27 +1,26 @@
 /**
  * Manual correction screen.
  *
- * Reached from the result screen's "Fix the title" button, shown when
- * `AnalysisResult.needs_review` is true. Prefilled with the recognized
- * title/author; saving calls `PATCH /jobs/{id}/correction` and returns to
+ * Reached from the result screen's "Wrong book?" link (always available on a
+ * finished scan) and from the "Fix the title" button on low-confidence ones.
+ * Prefilled with the current title/author; saving calls `PATCH /jobs/{id}/correction` and returns to
  * the result screen, which picks up the correction from the shared
  * `['job', jobId]` query cache (see `useCorrectJob`).
  */
 
-import { zodResolver } from '@hookform/resolvers/zod'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { useEffect, useState } from 'react'
-import { Controller, useForm } from 'react-hook-form'
-import { ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, Text, View } from 'react-native'
+import { useState } from 'react'
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native'
 
 import { ApiError } from '@/api/errors'
+import { TitleAuthorForm } from '@/components/book/TitleAuthorForm'
+import { BackRow } from '@/components/ui/BackRow'
 import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
 import { Screen } from '@/components/ui/Screen'
 import { useCorrectJob, useJob } from '@/features/scan/hooks'
 import { interpretResult } from '@/features/scan/mapper'
-import { correctionSchema, type CorrectionData } from '@/features/scan/schema'
+import type { CorrectionData } from '@/features/scan/schema'
 import { colors, spacing, typography } from '@/theme'
 
 export default function CorrectResultScreen() {
@@ -34,23 +33,6 @@ export default function CorrectResultScreen() {
   const { data: job, error, isLoading } = useJob(isValidId ? numericId : null)
   const correction = useCorrectJob(isValidId ? numericId : -1)
   const [generalError, setGeneralError] = useState<string | null>(null)
-
-  const {
-    control,
-    handleSubmit,
-    reset,
-    formState: { errors, isSubmitting },
-  } = useForm<CorrectionData>({
-    resolver: zodResolver(correctionSchema),
-    defaultValues: { title: '', author: '' },
-  })
-
-  useEffect(() => {
-    if (job?.status === 'done') {
-      const { analysis } = interpretResult(job.result)
-      reset({ title: analysis.title, author: analysis.author ?? '' })
-    }
-  }, [job, reset])
 
   async function submit(data: CorrectionData) {
     setGeneralError(null)
@@ -93,64 +75,30 @@ export default function CorrectResultScreen() {
     )
   }
 
+  // Prefilled with what is currently shown, so a small typo fix is one edit.
+  const { analysis } = interpretResult(job.result)
+
   return (
-    <Screen scrollable contentStyle={styles.content}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={styles.header}>
-          <Text style={styles.eyebrow}>Manual correction</Text>
-          <Text style={styles.title}>Fix the title</Text>
-          <Text style={styles.subtitle}>
-            The cover recognition wasn't fully confident. Correct the title and author below.
-          </Text>
-        </View>
+    <Screen scrollable>
+      <BackRow label="Result" onPress={() => router.back()} />
 
-        <View style={styles.form}>
-          {generalError ? <ErrorBanner message={generalError} /> : null}
+      <View style={styles.header}>
+        <Text style={styles.eyebrow}>Manual correction</Text>
+        <Text style={styles.title}>Fix the title</Text>
+        <Text style={styles.subtitle}>
+          If the book isn&apos;t the right one, correct the title and author below.
+        </Text>
+      </View>
 
-          <Controller
-            control={control}
-            name="title"
-            render={({ field: { onChange, onBlur, value } }) => (
-              <Input
-                autoCapitalize="words"
-                error={errors.title?.message}
-                label="Title"
-                onBlur={onBlur}
-                onChangeText={onChange}
-                placeholder="Book title"
-                value={value}
-              />
-            )}
-          />
-
-          <Controller
-            control={control}
-            name="author"
-            render={({ field: { onChange, onBlur, value } }) => (
-              <Input
-                autoCapitalize="words"
-                error={errors.author?.message}
-                hint="Leave empty if the author isn't visible on the cover."
-                label="Author"
-                onBlur={onBlur}
-                onChangeText={onChange}
-                placeholder="Author name"
-                value={value}
-              />
-            )}
-          />
-
-          <Button
-            label="Save correction"
-            loading={isSubmitting}
-            onPress={() => {
-              void handleSubmit(submit)()
-            }}
-            style={styles.button}
-          />
-          <Button label="Cancel" onPress={() => router.back()} variant="ghost" />
-        </View>
-      </KeyboardAvoidingView>
+      <TitleAuthorForm
+        authorHint="Leave empty if you don't know the author."
+        error={generalError}
+        initialAuthor={analysis.author ?? ''}
+        initialTitle={analysis.title}
+        onSubmit={submit}
+        submitLabel="Save correction"
+      />
+      <Button label="Cancel" onPress={() => router.back()} style={styles.cancel} variant="ghost" />
     </Screen>
   )
 }
@@ -161,10 +109,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.md,
-  },
-  content: {
-    flexGrow: 1,
-    justifyContent: 'center',
   },
   header: {
     marginBottom: spacing.xxl,
@@ -182,10 +126,7 @@ const styles = StyleSheet.create({
     ...typography.body,
     color: colors.inkMuted,
   },
-  form: {
-    gap: spacing.lg,
-  },
-  button: {
+  cancel: {
     marginTop: spacing.sm,
   },
 })

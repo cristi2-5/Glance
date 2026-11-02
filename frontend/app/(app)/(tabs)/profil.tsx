@@ -37,7 +37,7 @@ export default function ProfileScreen() {
   const logout = useAuthStore((s) => s.logout)
 
   const { data: history, isPending: loadingHistory, error: historyError } = useLibrary()
-  const { data: stats } = useLibraryStats()
+  const { data: stats, isPending: loadingStats, error: statsError } = useLibraryStats()
   const { data: preferences } = usePreferences()
 
   function confirmLogout() {
@@ -76,10 +76,13 @@ export default function ProfileScreen() {
       </View>
 
       <View style={styles.stats}>
-        <Stat label="Scanned" value={stats?.books_scanned ?? 0} />
-        <Stat label="Read" value={stats?.books_read ?? 0} />
-        <Stat label="Rated" value={stats?.ratings_given ?? 0} />
+        {/* "—" while loading or failed: a fake 0 reads as a fact about the library. */}
+        <Stat label="Scanned" value={stats ? stats.books_scanned : '—'} />
+        <Stat label="Read" value={stats ? stats.books_read : '—'} />
+        <Stat label="Rated" value={stats ? stats.ratings_given : '—'} />
       </View>
+
+      {!loadingStats && statsError ? <ErrorBanner message={statsError.message} /> : null}
 
       {stats?.average_rating !== null && stats?.average_rating !== undefined ? (
         <Text {...textFit.micro} style={styles.averageNote}>
@@ -186,7 +189,7 @@ export default function ProfileScreen() {
 }
 
 /** A numeric statistic in the profile header. */
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <View style={styles.stat}>
       <Text {...textFit.statValue} style={styles.statValue}>

@@ -45,8 +45,9 @@ export function RatingInput({ bookId }: RatingInputProps) {
               accessibilityLabel={`Rate ${value} out of 5`}
               accessibilityRole="button"
               disabled={update.isPending}
-              hitSlop={space[2]}
+              hitSlop={space[1]}
               key={value}
+              style={styles.star}
               onPress={() => {
                 update.mutate({ bookId, update: { rating: rating === value ? null : value } })
               }}
@@ -66,6 +67,12 @@ export function RatingInput({ bookId }: RatingInputProps) {
           </Text>
         ) : null}
       </View>
+
+      {update.error ? (
+        <Text {...textFit.prose} style={styles.error}>
+          {update.error.message}
+        </Text>
+      ) : null}
     </View>
   )
 }
@@ -82,6 +89,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space[2],
+  },
+  // 30 pt icon padded to a 44 pt target.
+  star: {
+    padding: space[1],
+  },
+  error: {
+    ...typography.caption,
+    color: colors.danger,
   },
   hint: {
     ...typography.micro,

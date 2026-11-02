@@ -36,6 +36,11 @@ export default function HomeScreen() {
     router.push('/scan/camera')
   }
 
+  function openSearch() {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    router.push('/search')
+  }
+
   return (
     // `edges={['top']}` — the tab bar already clears the gesture bar.
     <Screen scrollable edges={['top']}>
@@ -78,6 +83,22 @@ export default function HomeScreen() {
           </Text>
           <Feather color={colors.ink} name="arrow-right" size={18} />
         </View>
+      </Pressable>
+
+      <Pressable
+        accessibilityHint="Opens a form to look a book up by title and author"
+        accessibilityLabel="Type title and author"
+        accessibilityRole="button"
+        onPress={openSearch}
+        style={({ pressed }) => [styles.searchLink, pressed ? styles.capturePressed : null]}
+      >
+        <Feather color={colors.ink} name="edit-3" size={18} />
+        <View style={textColumn}>
+          <Text {...textFit.chip} style={styles.searchLabel}>
+            Type title &amp; author
+          </Text>
+        </View>
+        <Feather color={colors.inkMuted} name="arrow-right" size={18} />
       </Pressable>
 
       <View style={styles.section}>
@@ -190,6 +211,22 @@ const styles = StyleSheet.create({
     paddingVertical: space[4],
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
+  },
+  // Secondary action: a quiet outlined row under the primary capture card.
+  searchLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space[3],
+    minHeight: space[9] + space[2],
+    marginTop: space[3],
+    paddingHorizontal: space[5],
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+  },
+  searchLabel: {
+    ...typography.button,
+    color: colors.ink,
   },
   captureAction: {
     ...typography.overline,

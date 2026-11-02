@@ -144,6 +144,18 @@ Letting a reader mistake one for the other is what the label prevents.
 
 The backend keeps the scan photo in a private blob container and serves it only to its owner at `GET /books/{id}/library/photo`. `src/features/library/photo.ts` (`useLibraryPhoto`) builds the `expo-image` source with the `Authorization` header and a `?v=<updated_at>` cache-buster (a rescan replaces the photo). `BookCover` falls back catalog cover -> your photo -> initial; the book screen shows a "Your photo" thumbnail (`UserPhoto`) when `has_photo`. Known limit: image requests bypass the axios refresh interceptor, so with an expired access token the photo silently falls back to the initial.
 
+### Typed search reuses the scan screens
+
+Home has a second, quieter action, "Type title & author", opening `app/(app)/search.tsx`. It posts `POST /books/lookup {title, author?}` (`useLookupBook`), gets the same `202 {job_id}` as a scan and `router.replace`s into `/scan/<job_id>`, so polling, the loading screen and the result screen are reused unchanged. The job result carries `searched: true` (optional in `AnalysisResult`, absent on older results); the result screen then says "Found by title" instead of the confidence chip. The title/author fields are one shared `TitleAuthorForm` (react-hook-form + zod), used by search and by the correction screen. Every finished, non-demo result also shows "Wrong book? Edit title or author", so correction no longer depends on `needs_review`.
+
+### Keyboard: `Screen scrollable` handles it
+
+`Screen`'s ScrollView sets `automaticallyAdjustKeyboardInsets` and `keyboardDismissMode="interactive"`, which keeps a focused input (the journal composer at the bottom of the book screen, any form) above the iOS keyboard. **Don't nest a `KeyboardAvoidingView` inside a `Screen scrollable`**: inside a ScrollView it does nothing useful and fights the built-in handling. Forms chain Return with refs (`returnKeyType="next"`, last field `"go"`/`"done"` submits).
+
+### The loading facts must be well-established
+
+`src/features/scan/facts.ts` feeds the rotating `DidYouKnow` card on the scan loading screen: book/reading facts ("DID YOU KNOW?") and app tips ("TIP"). Facts must be uncontroversial and phrased with the right hedge ("about 49 copies survive"); no shaky statistics or unsourced superlatives. A wrong fact on a screen the reader stares at for half a minute is worse than a spinner.
+
 ### Mocks are visibly marked
 
 A screen rendering data the backend cannot produce yet always shows a `<DemoNote>` or a banner. An unmarked mock is a lie on the screen — indistinguishable from a real result during testing.
@@ -201,6 +213,7 @@ frontend/
 │       │   ├── index.tsx           # Home — cover capture
 │       │   ├── recomandari.tsx     # real suggestions + explanations (Module 6b)
 │       │   └── profil.tsx          # real identity, counters, preferences, history
+│       ├── search.tsx              # find a book by typing title/author (POST /books/lookup)
 │       └── scan/
 │           ├── camera.tsx          # capture, full-screen
 │           └── [jobId].tsx         # polling + result

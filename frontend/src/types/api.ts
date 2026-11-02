@@ -114,6 +114,17 @@ export interface AnalysisResult {
    * useful for skipping the request entirely.
    */
   source_count: number
+  /**
+   * `true` when the book was looked up by a typed title/author
+   * (`POST /books/lookup`) instead of a photo. Absent on older results.
+   */
+  searched?: boolean
+}
+
+/** `POST /books/lookup` body. Same limits as the correction form. */
+export interface LookupRequest {
+  title: string
+  author?: string | null
 }
 
 /** `app/schemas/vision.py` — `CorrectionRequest`, the body for `PATCH /jobs/{id}/correction`. */

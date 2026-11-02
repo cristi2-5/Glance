@@ -57,6 +57,13 @@ export function Screen({
         style={styles.root}
         contentContainerStyle={[padding, contentStyle]}
         keyboardShouldPersistTaps="handled"
+        // iOS: shrink the scroll area by the keyboard's height and scroll the
+        // focused input into view, so a form (or the journal composer at the
+        // bottom of a long page) is never hidden behind the keyboard. Android's
+        // default `adjustResize` already does this. Do not nest a
+        // KeyboardAvoidingView inside: the two fight.
+        automaticallyAdjustKeyboardInsets
+        keyboardDismissMode="interactive"
         showsVerticalScrollIndicator={false}
       >
         {children}

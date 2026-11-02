@@ -2,7 +2,7 @@
 
 import { apiClient } from '@/api/client'
 import { SUMMARY_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } from '@/config/env'
-import type { BookSummary, JobCreated } from '@/types/api'
+import type { BookSummary, JobCreated, LookupRequest } from '@/types/api'
 
 /**
  * Description of a local file, in the shape `FormData` accepts in
@@ -48,6 +48,21 @@ export async function analyzeCover(uri: string): Promise<JobCreated> {
     timeout: UPLOAD_TIMEOUT_MS,
   })
 
+  return data
+}
+
+/**
+ * Starts a lookup by typed title (and optionally author), with no photo.
+ *
+ * Answers the same `202 {job_id}` as a scan, so the caller polls the job
+ * with the same screens.
+ *
+ * Raises:
+ *   ApiError: 422 on invalid input, 503 when the queue is down, 401 if the
+ *     session has expired.
+ */
+export async function lookupBook(request: LookupRequest): Promise<JobCreated> {
+  const { data } = await apiClient.post<JobCreated>('/books/lookup', request)
   return data
 }
 

@@ -320,8 +320,8 @@ function SummaryLoading() {
       </View>
 
       <Text {...textFit.prose} style={styles.loadingNote}>
-        The first time a book is summarized, everything written about it is indexed locally. That
-        part is slow on a laptop without a graphics card.
+        The first time a book is summarized, everything written about it has to be gathered and
+        indexed. That can take a little while; later visits are instant.
       </Text>
     </View>
   )

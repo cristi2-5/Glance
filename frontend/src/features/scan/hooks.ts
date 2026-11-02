@@ -2,12 +2,12 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { analyzeCover, getBookSummary } from '@/api/endpoints/books'
+import { analyzeCover, getBookSummary, lookupBook } from '@/api/endpoints/books'
 import { correctJob, getJob } from '@/api/endpoints/jobs'
 import { ApiError } from '@/api/errors'
 import { JOB_POLLING_INTERVAL_MS } from '@/config/env'
 import { prepareCoverForUpload } from '@/lib/imagine'
-import type { BookSummary, CorrectionRequest, JobCreated, JobPublic } from '@/types/api'
+import type { BookSummary, CorrectionRequest, JobCreated, JobPublic, LookupRequest } from '@/types/api'
 
 /** Arguments for starting an analysis. */
 interface AnalysisArgs {
@@ -29,6 +29,17 @@ export function useAnalyzeCover() {
       const prepared = await prepareCoverForUpload(uri, width)
       return analyzeCover(prepared.uri)
     },
+  })
+}
+
+/**
+ * Starts a lookup by typed title/author (no photo).
+ *
+ * The returned job id goes to the same polling/result screens as a scan.
+ */
+export function useLookupBook() {
+  return useMutation<JobCreated, Error, LookupRequest>({
+    mutationFn: lookupBook,
   })
 }
 

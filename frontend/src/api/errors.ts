@@ -103,7 +103,7 @@ export function normalizeError(error: unknown): ApiError {
 
   if (!error.response) {
     return new ApiError(
-      "Can't connect to the server. Check that the backend is running and that the phone is on the same Wi-Fi network.",
+      "Can't reach the Glance server. Check your internet connection and try again.",
       0
     )
   }

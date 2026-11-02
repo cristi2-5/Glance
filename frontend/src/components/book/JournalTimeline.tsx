@@ -173,7 +173,8 @@ function JournalNote({ bookId, note }: { bookId: number; note: JournalEntry }) {
           <Pressable
             accessibilityLabel={editing ? 'Cancel editing' : 'Edit note'}
             accessibilityRole="button"
-            hitSlop={space[2]}
+            hitSlop={space[1]}
+            style={styles.iconButton}
             onPress={() => {
               // Reset the draft on cancel, so an abandoned edit doesn't
               // reappear the next time the note is opened.
@@ -187,8 +188,9 @@ function JournalNote({ bookId, note }: { bookId: number; note: JournalEntry }) {
           <Pressable
             accessibilityLabel="Delete note"
             accessibilityRole="button"
-            hitSlop={space[2]}
+            hitSlop={space[1]}
             onPress={confirmDelete}
+            style={styles.iconButton}
           >
             <Feather color={colors.inkFaint} name="trash-2" size={16} />
           </Pressable>
@@ -286,7 +288,14 @@ const styles = StyleSheet.create({
   },
   noteActions: {
     flexDirection: 'row',
-    gap: space[4],
+    gap: space[1],
+  },
+  // 16 pt icon centred in a 44 pt target.
+  iconButton: {
+    width: space[9] + space[2],
+    height: space[9] + space[2],
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   noteBody: {
     ...typography.bodyReading,

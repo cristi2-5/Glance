@@ -17,7 +17,7 @@
 
 import { Feather } from '@expo/vector-icons'
 import { useLocalSearchParams, useRouter } from 'expo-router'
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native'
+import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native'
 
 import { BookCover } from '@/components/book/BookCover'
 import { JournalTimeline } from '@/components/book/JournalTimeline'
@@ -27,6 +27,7 @@ import { ReadingStatusPicker } from '@/components/book/ReadingStatusPicker'
 import { UserPhoto } from '@/components/book/UserPhoto'
 import { ErrorBanner } from '@/components/ui/BannerEroare'
 import { Button } from '@/components/ui/Button'
+import { BackRow } from '@/components/ui/BackRow'
 import { Card } from '@/components/ui/Card'
 import { Chip } from '@/components/ui/Chip'
 import { Screen } from '@/components/ui/Screen'
@@ -114,18 +115,7 @@ export default function BookScreen() {
 
   return (
     <Screen scrollable>
-      <Pressable
-        accessibilityLabel="Back"
-        accessibilityRole="button"
-        hitSlop={space[2]}
-        onPress={() => router.back()}
-        style={styles.backRow}
-      >
-        <Feather color={colors.inkMuted} name="chevron-left" size={20} />
-        <Text {...textFit.micro} style={styles.backLabel}>
-          YOUR BOOKS
-        </Text>
-      </Pressable>
+      <BackRow label="Your books" onPress={() => router.back()} />
 
       <View style={styles.header}>
         <BookCover size="hero" photoOf={photoOf} title={book.title} url={book.cover_url} />
@@ -161,12 +151,7 @@ export default function BookScreen() {
 
       {/* With no catalog cover the hero above already shows this photo. */}
       {photoOf && book.cover_url ? (
-        <View style={styles.photo}>
-          <Text {...textFit.micro} style={styles.photoLabel}>
-            YOUR PHOTO
-          </Text>
-          <UserPhoto photoOf={photoOf} title={book.title} />
-        </View>
+        <UserPhoto photoOf={photoOf} title={book.title} />
       ) : null}
 
       <View style={styles.controls}>
@@ -182,8 +167,15 @@ export default function BookScreen() {
         <JournalTimeline bookId={validId} />
       </View>
 
+      {remove.error ? (
+        <Text {...textFit.prose} style={styles.removeError}>
+          {remove.error.message}
+        </Text>
+      ) : null}
+
       <Button
         label="Remove from library"
+        loading={remove.isPending}
         onPress={confirmRemove}
         style={styles.removeButton}
         variant="secondary"
@@ -222,16 +214,6 @@ const styles = StyleSheet.create({
   loading: {
     marginTop: space[8],
   },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space[1],
-    marginBottom: space[4],
-  },
-  backLabel: {
-    ...typography.micro,
-    color: colors.inkMuted,
-  },
   header: {
     flexDirection: 'row',
     gap: space[4],
@@ -266,14 +248,6 @@ const styles = StyleSheet.create({
     gap: space[2],
     marginTop: space[5],
   },
-  photo: {
-    gap: space[2],
-    marginTop: space[6],
-  },
-  photoLabel: {
-    ...typography.micro,
-    color: colors.inkFaint,
-  },
   controls: {
     gap: space[5],
     marginTop: space[6],
@@ -297,5 +271,10 @@ const styles = StyleSheet.create({
   },
   removeButton: {
     marginTop: space[8],
+  },
+  removeError: {
+    ...typography.body,
+    color: colors.danger,
+    marginTop: space[6],
   },
 })
