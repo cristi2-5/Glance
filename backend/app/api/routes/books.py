@@ -27,10 +27,11 @@ from app.schemas.library import (
     LibraryEntryUpdate,
 )
 from app.schemas.summary import BookSummary
+from app.schemas.vision import LookupRequest
 from app.services import journal_service, library_service
 from app.services.image_preprocessing import preprocess_cover
 from app.services.storage import JobKind, JobMessage
-from app.workers.cover_pipeline import delete_photo_blob, fail_job
+from app.workers.cover_pipeline import EMPTY_BOOK_FIELDS, delete_photo_blob, fail_job
 
 router = APIRouter(prefix="/books", tags=["books"])
 
@@ -127,6 +128,75 @@ async def analyze_cover(
         )
     except StorageUnavailable:
         await fail_job(db, job, "The scan could not be queued. Please try again.", blob_store)
+        raise
+    return JobCreated(job_id=job.id)
+
+
+@router.post("/lookup", status_code=status.HTTP_202_ACCEPTED, response_model=JobCreated)
+async def lookup_book(
+    lookup: LookupRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+    job_queue: JobQueueDep,
+) -> JobCreated:
+    """Finds a book by a typed title (and optionally author), without a photo.
+
+    The alternative to scanning a cover. It is a photo-less job that is
+    *born* in the state a correction leaves behind: `running`, with the
+    title and author already in `result` (the reader's word, confidence
+    1.0, `method="manual"`) and the catalog half empty. The queue worker
+    then handles it exactly as it handles a correction, through the same
+    `refresh` message: fetch the catalogs, fill the book fields, mark the
+    job `done`, record the book in the library. The client polls
+    `GET /jobs/{job_id}` as for a scan. `searched=True` lets it say "Found
+    by title" instead of showing a recognition confidence.
+
+    As in `analyze_cover`, the job is committed *before* the message is
+    sent, so a fast queue worker never dequeues a job that does not exist.
+
+    Args:
+        lookup: The typed title and optional author.
+        db: The current database session.
+        current_user: The authenticated user, owner of the job.
+        job_queue: Where the refresh message is sent.
+
+    Returns:
+        The id of the newly created job.
+
+    Raises:
+        StorageUnavailable: If the job could not be queued (the job is left
+            `failed`).
+    """
+    job = Job(
+        user_id=current_user.id,
+        status=JobStatus.RUNNING.value,
+        result={
+            **EMPTY_BOOK_FIELDS,
+            "title": lookup.title,
+            "author": lookup.author,
+            "confidence": 1.0,
+            "method": "manual",
+            "needs_review": False,
+            "corrected": False,
+            "searched": True,
+        },
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    telemetry.annotate(**{"glance.job_id": job.id})
+
+    try:
+        await job_queue.send(
+            JobMessage(
+                kind=JobKind.REFRESH,
+                job_id=job.id,
+                traceparent=telemetry.inject_traceparent(),
+            )
+        )
+    except StorageUnavailable:
+        # Nothing will ever pick this job up. There is no photo to remove.
+        await fail_job(db, job, "The search could not be queued. Please try again.")
         raise
     return JobCreated(job_id=job.id)
 
