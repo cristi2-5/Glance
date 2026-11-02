@@ -6,7 +6,7 @@
  */
 
 import { forwardRef, useState } from 'react'
-import { StyleSheet, Text, TextInput, View, type TextInputProps } from 'react-native'
+import { StyleSheet, Text, TextInput, View, type TextInputInstance, type TextInputProps } from 'react-native'
 
 import { colors, radius, spacing, typography } from '@/theme'
 
@@ -18,7 +18,7 @@ interface InputProps extends Omit<TextInputProps, 'style'> {
   hint?: string
 }
 
-export const Input = forwardRef<TextInput, InputProps>(function Input(
+export const Input = forwardRef<TextInputInstance, InputProps>(function Input(
   { label, error, hint, ...props },
   ref
 ) {

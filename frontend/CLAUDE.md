@@ -4,25 +4,28 @@ This file is automatically loaded at every work session in `frontend/`. Don't re
 
 ## Starting rule: check the versioned docs
 
-**Expo changes fast.** Before writing code that uses an Expo SDK API, read the docs for the exact version: <https://docs.expo.dev/versions/v54.0.0/>. APIs that changed recently and are easy to get wrong from memory:
+**Expo changes fast.** Before writing code that uses an Expo SDK API, read the docs for the exact version: <https://docs.expo.dev/versions/v58.0.0/>. APIs that changed recently and are easy to get wrong from memory:
 
 - `expo-camera` → the component is `CameraView` + the `useCameraPermissions` hook (not the old `Camera`).
 - `expo-image-manipulator` → contextual API `ImageManipulator.manipulate(uri).resize(...).renderAsync()`, then `.saveAsync(...)`. `manipulateAsync` exists but is **deprecated**.
 
 When the types in `node_modules` contradict the docs, the types win — they're the version actually installed.
 
-### Why SDK 54, not "latest" (57)
+### Which SDK: whatever the installed Expo Go supports
 
-The project was originally scaffolded with `expo@latest`, which at the time meant SDK 57. **Expo Go on the phone doesn't keep pace with npm** — especially on iOS, where Apple review delays the compatible Expo Go release by days or weeks after a new SDK ships. Symptom: the app refuses to open the project, with an SDK-incompatibility message, even though Expo Go looks "up to date" in the App Store.
+**The Expo Go on the phone dictates the SDK, not npm.** On iOS the App Store only offers the newest Expo Go, and an older one cannot be installed, so the phone runs exactly one SDK at a time and it moves without warning. History: scaffolded on SDK 57, went down to 54 when the App Store's Expo Go lagged behind npm, then up to 58 when the store moved ahead and auto-updated the phone. Symptom of a mismatch: "Project is incompatible with this version of Expo Go".
 
-Always check which SDK the *actually installed* Expo Go build supports (not what the marketing page says) before picking the `expo` version in `package.json`. If an incompatibility shows up again, downgrade with:
+Check which SDK the installed Expo Go build supports before changing `expo` in `package.json`, then switch with:
 
 ```bash
-npx expo install expo@^<supported-version>.0.0
+npx expo install expo@^<supported-version>.0.0 --fix
 rm -rf node_modules package-lock.json
 npm install
 npx expo install --fix
+npx expo-doctor@latest
 ```
+
+Node must be 22.13+, 24.3+ or 26+ (SDK 58); odd versions (23, 25) are unsupported. `react-native-worklets` is a required peer of `react-native-reanimated` and must be installed directly.
 
 After any SDK change, re-check `app.json` → `plugins`: every package listed there must actually have an `app.plugin.js` (`ls node_modules/<package>/app.plugin.js`). A package without a real plugin (e.g. `expo-image`, `expo-status-bar` — neither needs one) makes `expo config`/`expo start` fail silently, with no message, on Node 22+ because of experimental "type stripping" hitting `.ts` files inside `node_modules`. The symptom is exit code 1 with no stdout/stderr — if that happens, run `node node_modules/expo/node_modules/@expo/cli config --json` directly to see the real error, which is hidden behind the `npx expo` CLI.
 
@@ -42,7 +45,7 @@ The palette changed with this system: the primary action is now **espresso `#3A3
 
 The mobile client for **Glance**: you photograph a book cover, the app recognizes the title and author, gathers material from open sources, generates a summary via RAG, and offers recommendations.
 
-React Native + Expo SDK 54, strict TypeScript, expo-router. The backend is local (FastAPI on the laptop) — the client **never** talks to cloud services.
+React Native + Expo SDK 58, strict TypeScript, expo-router. The backend is local (FastAPI on the laptop) — the client **never** talks to cloud services.
 
 ## How to run it
 
@@ -165,7 +168,7 @@ Scan screens need to cover the whole screen, without the tab bar, but still unde
 
 | Need | Library | Notes |
 |---|---|---|
-| Framework | `expo` SDK 54 + `react-native` 0.81 | React 19.1 |
+| Framework | `expo` SDK 58 + `react-native` 0.88 | React 19.3; needs Node 22.13+, 24.3+ or 26+ (odd versions such as 23/25 are unsupported) |
 | Navigation | `expo-router` | file-based; routes are the files in `app/` |
 | Server state | `@tanstack/react-query` | `refetchInterval` does the job polling |
 | Auth state | `zustand` | the only global state |
@@ -178,7 +181,7 @@ Scan screens need to cover the whole screen, without the tab bar, but still unde
 | Icons | `@expo/vector-icons` (Feather) | |
 | Styling | `StyleSheet` + tokens from `src/theme` | no NativeWind — zero Babel/Metro config to maintain |
 
-`react-dom` must match the `react` version from the current SDK exactly (currently `19.1.0`). A mismatch here causes ERESOLVE on any later `npm install`, pulled in by a transitive package (`@expo/dom-webview` → `react-server-dom-webpack`). Don't fix this with `--legacy-peer-deps` — repin `react-dom` to the correct version and reinstall clean.
+`react-dom` must match the `react` version from the current SDK exactly (currently `19.3.0`). A mismatch here causes ERESOLVE on any later `npm install`, pulled in by a transitive package (`@expo/dom-webview` → `react-server-dom-webpack`). Don't fix this with `--legacy-peer-deps` — repin `react-dom` to the correct version and reinstall clean.
 
 ## Directory structure
 
