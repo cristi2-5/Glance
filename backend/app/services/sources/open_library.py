@@ -27,6 +27,7 @@ from app.services.sources.base import (
     SourcePassage,
     SourceResult,
 )
+from app.services.sources.categories import clean_categories
 from app.services.sources.matching import MIN_TITLE_SIMILARITY, title_similarity
 
 logger = structlog.get_logger(__name__)
@@ -165,7 +166,9 @@ class OpenLibrarySource:
         """
         authors = doc.get("author_name") or []
         cover_id = doc.get("cover_i")
-        subjects = [str(s) for s in (doc.get("subject") or [])][:_MAX_SUBJECTS]
+        subjects = clean_categories(
+            (str(s) for s in (doc.get("subject") or [])), limit=_MAX_SUBJECTS
+        )
 
         return BookMetadata(
             title=doc.get("title"),
@@ -246,7 +249,9 @@ class OpenLibrarySource:
         cover_id = doc.get("cover_i")
 
         description = _flatten_description(work.get("description"))
-        subjects = [str(s) for s in (work.get("subjects") or [])][:_MAX_SUBJECTS]
+        subjects = clean_categories(
+            (str(s) for s in (work.get("subjects") or [])), limit=_MAX_SUBJECTS
+        )
 
         metadata = BookMetadata(
             title=doc.get("title"),

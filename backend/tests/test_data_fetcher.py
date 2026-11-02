@@ -132,7 +132,8 @@ async def test_cache_miss_merges_metadata_in_source_priority_order(db: AsyncSess
 
     assert book.description == "Google blurb."
     assert book.isbn_13 == "9780441013593", "gap filled by the lower-priority source"
-    assert book.categories == ["Fiction", "Ecology"]
+    # "Fiction" is a generic shelf label, dropped once something specific exists.
+    assert book.categories == ["Ecology"]
 
 
 # --- Cache hit --------------------------------------------------------------

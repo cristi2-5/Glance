@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.models.book import Book, SourceName, TextSource
 from app.services.sources.base import BookMetadata, ContentSource, SourceResult
+from app.services.sources.categories import clean_categories
 from app.services.sources.cover_fallback import CoverFallback, OfficialCoverFallback
 from app.services.sources.google_books import GoogleBooksSource
 from app.services.sources.open_library import OpenLibrarySource
@@ -400,7 +401,7 @@ def _merge_metadata(results: list[SourceResult]) -> BookMetadata:
             title=merged.title or source_meta.title,
             author=merged.author or source_meta.author,
             description=merged.description or source_meta.description,
-            categories=categories,
+            categories=clean_categories(categories),
             cover_url=merged.cover_url or source_meta.cover_url,
             isbn_13=merged.isbn_13 or source_meta.isbn_13,
             isbn_10=merged.isbn_10 or source_meta.isbn_10,

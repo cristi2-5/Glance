@@ -22,6 +22,7 @@ from app.services.sources.base import (
     SourcePassage,
     SourceResult,
 )
+from app.services.sources.categories import clean_categories
 from app.services.sources.matching import MIN_TITLE_SIMILARITY, title_similarity
 
 logger = structlog.get_logger(__name__)
@@ -225,7 +226,7 @@ class GoogleBooksSource:
             title=info.get("title"),
             author=_pick_author([str(a) for a in authors], queried_author),
             description=info.get("description"),
-            categories=[str(c) for c in (info.get("categories") or [])],
+            categories=clean_categories(str(c) for c in (info.get("categories") or [])),
             cover_url=images.get("thumbnail") or images.get("smallThumbnail"),
             isbn_13=identifiers.get("ISBN_13"),
             isbn_10=identifiers.get("ISBN_10"),

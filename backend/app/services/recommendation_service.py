@@ -97,31 +97,11 @@ from app.services.sources.base import (
     DiscoveryQuery,
     DiscoveryResult,
 )
+from app.services.sources.categories import GENERIC_SUBJECTS, clean_categories
 from app.services.sources.google_books import GoogleBooksSource
 from app.services.sources.open_library import OpenLibrarySource
 
 logger = structlog.get_logger(__name__)
-
-#: Catalog labels too broad to be a discovery query. Google Books tags most
-#: novels `Fiction` and most children's books `Juvenile Fiction` — top-level
-#: BISAC headings that describe the shelf, not the book. Seeding discovery
-#: with one returns an arbitrary slice of everything ever published, which
-#: then ranks poorly against the profile and crowds out the specific
-#: subjects Open Library contributed ("Dystopias", "Desert survival").
-#: Folded and matched exactly, so "Science fiction" is untouched.
-_GENERIC_SUBJECTS = frozenset(
-    {
-        "fiction",
-        "juvenile fiction",
-        "juvenile nonfiction",
-        "nonfiction",
-        "general",
-        "literary collections",
-        "literary criticism",
-        "books",
-    }
-)
-
 
 # Which readers have a discovery run in flight, and when each last began.
 #
@@ -672,7 +652,7 @@ class RecommendationService:
                 title=candidate.title,
                 author=candidate.author,
                 description=candidate.description,
-                categories=candidate.categories or None,
+                categories=clean_categories(candidate.categories) or None,
                 cover_url=candidate.cover_url,
                 isbn_13=candidate.isbn_13,
                 isbn_10=candidate.isbn_10,
@@ -784,7 +764,7 @@ def _collect_candidate(candidates: dict[str, BookMetadata], candidate: BookMetad
         existing,
         author=existing.author or candidate.author,
         description=existing.description or candidate.description,
-        categories=merged_categories,
+        categories=clean_categories(merged_categories),
         cover_url=existing.cover_url or candidate.cover_url,
         isbn_13=existing.isbn_13 or candidate.isbn_13,
         isbn_10=existing.isbn_10 or candidate.isbn_10,
@@ -816,7 +796,7 @@ def _seed_queries(preferences: LibraryPreferences, settings: Settings) -> list[D
     subjects = [
         genre
         for genre in preferences.favorite_genres
-        if genre.strip().casefold() not in _GENERIC_SUBJECTS
+        if genre.strip().casefold() not in GENERIC_SUBJECTS
     ][: settings.recommendation_seed_genres]
 
     authors = preferences.favorite_authors[: settings.recommendation_seed_authors]
@@ -879,8 +859,14 @@ def _exclusions(rated: list[LibraryEntry]) -> tuple[set[str], set[str]]:
 
         if book.author:
             authors.add(book.author.casefold().strip())
+        # Generic shelf labels never exclude: cleaning keeps "Fiction" only on
+        # books with nothing more specific, so a liked book no longer carries
+        # it to cancel the dislike, and one disliked bare record would
+        # otherwise hide every candidate labelled only "Fiction".
         for category in book.categories or []:
-            genres.add(category.casefold().strip())
+            folded = category.casefold().strip()
+            if folded not in GENERIC_SUBJECTS:
+                genres.add(folded)
 
     return disliked_authors - liked_authors, disliked_genres - liked_genres
 
@@ -1014,7 +1000,7 @@ def _shared_category(candidate: Book, source: Book) -> str | None:
         label
         for label in candidate.categories or []
         if label.casefold().strip() in source_labels
-        and label.casefold().strip() not in _GENERIC_SUBJECTS
+        and label.casefold().strip() not in GENERIC_SUBJECTS
     ]
     if not shared:
         return None

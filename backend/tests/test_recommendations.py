@@ -417,6 +417,44 @@ async def test_a_disliked_author_is_excluded_from_recommendations(
     assert [entry.book.title for entry in result.recommendations] == []
 
 
+async def test_a_disliked_book_labelled_only_fiction_excludes_nothing_by_genre(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    user_id: int,
+    embedder: HashingEmbeddingClient,
+    profile_store: PgProfileStore,
+) -> None:
+    """A generic shelf label is not a taste: disliking a bare "Fiction" record
+    must not hide every candidate whose only label is "Fiction".
+
+    Cleaning keeps "Fiction" only on books with nothing more specific, so a
+    liked book no longer carries it to cancel the dislike.
+    """
+    service = build_service(embedder, profile_store)
+
+    async with db_session_factory() as db:
+        await shelve(
+            db,
+            user_id,
+            make_book("Dune", "Frank Herbert", ["Science fiction"], DESERT_BLURB),
+            rating=5,
+        )
+        await shelve(
+            db,
+            user_id,
+            make_book("A Bare Record", "Someone Else", ["Fiction"], EMPIRE_BLURB),
+            rating=1,
+        )
+        await seed_pool(
+            db,
+            profile_store,
+            embedder,
+            [make_book("Desert Tales", "Another Author", ["Fiction"], DESERT_BLURB)],
+        )
+        result = await service.recommend(db, user_id)
+
+    assert [entry.book.title for entry in result.recommendations] == ["Desert Tales"]
+
+
 async def test_an_author_both_liked_and_disliked_is_not_excluded(
     db_session_factory: async_sessionmaker[AsyncSession],
     user_id: int,

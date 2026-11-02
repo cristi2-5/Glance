@@ -247,12 +247,14 @@ export default function RezultatScanareScreen() {
         </View>
       ) : null}
 
-      <Button
-        label="Scan another book"
-        onPress={() => router.replace('/scan/camera')}
-        style={styles.finalButton}
-        variant="secondary"
-      />
+      <View style={styles.finalActions}>
+        {analysis.searched ? (
+          <Button label="Find another book" onPress={() => router.replace('/search')} />
+        ) : (
+          <Button label="Scan another book" onPress={() => router.replace('/scan/camera')} />
+        )}
+        <Button label="Back to Home" onPress={() => router.replace('/')} variant="secondary" />
+      </View>
     </Screen>
   )
 }
@@ -480,7 +482,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     maxWidth: 280,
   },
-  finalButton: {
+  finalActions: {
+    gap: space[3],
     marginTop: spacing.xxl,
   },
 })
